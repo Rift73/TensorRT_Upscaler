@@ -309,7 +309,7 @@ def run_pingo(input_path: str) -> bool:
                 temp_file = Path(temp_dir) / "temp_pingo.png"
                 shutil.copy2(input_file, temp_file)
 
-                cmd = ["pingo", "-lossless", "-s4", str(temp_file)]
+                cmd = ["pingo", "-lossless", "-s4", "-process=4", str(temp_file)]
                 result = subprocess.run(cmd, capture_output=True, timeout=120)
 
                 if result.returncode == 0:
@@ -319,7 +319,7 @@ def run_pingo(input_path: str) -> bool:
                 return False
         else:
             # Direct path for ASCII-only paths
-            cmd = ["pingo", "-lossless", "-s4", input_path]
+            cmd = ["pingo", "-lossless", "-s4", "-process=4", input_path]
             result = subprocess.run(cmd, capture_output=True, timeout=120)
             return result.returncode == 0
 
