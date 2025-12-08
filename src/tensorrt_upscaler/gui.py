@@ -774,15 +774,15 @@ class MainWindow(QMainWindow):
         self._output_edit.setPlaceholderText("Drop folder here or browse...")
         self.onnx_edit = QLineEdit()
 
-        # Tile combos (matching vapoursynth_image_upscaler style)
-        self._tile_w_combo = QComboBox()
-        self._tile_h_combo = QComboBox()
-        for combo in (self._tile_w_combo, self._tile_h_combo):
-            combo.setEditable(True)
-            combo.addItems(["512", "768", "1024", "1088", "1536", "1920"])
-            combo.setFixedWidth(100)
-        self._tile_w_combo.setCurrentText("1088")
-        self._tile_h_combo.setCurrentText("1920")
+        # Tile spinboxes (multiples of 64 only)
+        self._tile_w_spin = QSpinBox()
+        self._tile_h_spin = QSpinBox()
+        for spin in (self._tile_w_spin, self._tile_h_spin):
+            spin.setRange(64, 8192)
+            spin.setSingleStep(64)
+            spin.setFixedWidth(100)
+        self._tile_w_spin.setValue(1088)
+        self._tile_h_spin.setValue(1920)
 
         # Auto-detect tile size button
         self._btn_auto_tile = QPushButton("Auto")
@@ -1023,10 +1023,10 @@ class MainWindow(QMainWindow):
         tile_layout.setSpacing(4)
         tile_box.setLayout(tile_layout)
         tile_layout.addWidget(QLabel("Width:"))
-        tile_layout.addWidget(self._tile_w_combo)
+        tile_layout.addWidget(self._tile_w_spin)
         tile_layout.addSpacing(10)
         tile_layout.addWidget(QLabel("Height:"))
-        tile_layout.addWidget(self._tile_h_combo)
+        tile_layout.addWidget(self._tile_h_spin)
         tile_layout.addWidget(self._btn_auto_tile)
         tile_layout.addSpacing(20)
         tile_layout.addWidget(QLabel("Backend:"))
@@ -1334,8 +1334,8 @@ class MainWindow(QMainWindow):
             else:
                 tile_w, tile_h = 512, 512
 
-            self._tile_w_combo.setCurrentText(str(tile_w))
-            self._tile_h_combo.setCurrentText(str(tile_h))
+            self._tile_w_spin.setValue(tile_w)
+            self._tile_h_spin.setValue(tile_h)
 
             QMessageBox.information(
                 self, "Auto-Detect",
@@ -1493,8 +1493,8 @@ class MainWindow(QMainWindow):
             if os.path.exists(default_onnx):
                 self.onnx_edit.setText(default_onnx)
 
-        self._tile_w_combo.setCurrentText(str(cfg.tile_width))
-        self._tile_h_combo.setCurrentText(str(cfg.tile_height))
+        self._tile_w_spin.setValue(cfg.tile_width)
+        self._tile_h_spin.setValue(cfg.tile_height)
         self._upscale_check.setChecked(cfg.upscale_enabled)
         self._fp16_check.setChecked(cfg.use_fp16)
         self._bf16_check.setChecked(cfg.use_bf16)
@@ -1534,11 +1534,8 @@ class MainWindow(QMainWindow):
 
         # Model
         cfg.onnx_path = self.onnx_edit.text()
-        try:
-            cfg.tile_width = int(self._tile_w_combo.currentText())
-            cfg.tile_height = int(self._tile_h_combo.currentText())
-        except ValueError:
-            pass
+        cfg.tile_width = self._tile_w_spin.value()
+        cfg.tile_height = self._tile_h_spin.value()
         cfg.upscale_enabled = self._upscale_check.isChecked()
         cfg.use_fp16 = self._fp16_check.isChecked()
         cfg.use_bf16 = self._bf16_check.isChecked()
