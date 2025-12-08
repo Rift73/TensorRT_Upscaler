@@ -46,11 +46,12 @@ PIP_PACKAGES = [
     "opencv-python>=4.8.0",
     "numba>=0.58.0",
     "fpng-py>=0.0.4",
-    "cuda-python",
 ]
 
-# TensorRT packages (separate due to special handling)
-TENSORRT_PACKAGES = [
+# CUDA/TensorRT packages (separate due to special handling)
+CUDA_PACKAGES = [
+    "cuda-python",
+    "pycuda",
     "tensorrt>=10.0.0",
 ]
 
@@ -125,7 +126,7 @@ class InstallWorker(QThread):
             if self._install_pip:
                 total_steps += len(PIP_PACKAGES)
             if self._install_tensorrt:
-                total_steps += len(TENSORRT_PACKAGES)
+                total_steps += len(CUDA_PACKAGES)
             if self._install_tools:
                 total_steps += len(EXTERNAL_TOOLS)
 
@@ -147,11 +148,11 @@ class InstallWorker(QThread):
                     if not success:
                         self.progress_signal.emit(f"Warning: Failed to install {pkg}")
 
-            # Install TensorRT packages
+            # Install CUDA/TensorRT packages
             if self._install_tensorrt:
-                self.progress_signal.emit("\n=== Installing TensorRT packages ===\n")
+                self.progress_signal.emit("\n=== Installing CUDA/TensorRT packages ===\n")
                 self.progress_signal.emit("Note: TensorRT requires NVIDIA GPU and CUDA toolkit installed.\n")
-                for pkg in TENSORRT_PACKAGES:
+                for pkg in CUDA_PACKAGES:
                     if self._cancelled:
                         self.finished_signal.emit(False, "Installation cancelled.")
                         return
@@ -361,14 +362,13 @@ class DependenciesWindow(QDialog):
 
         info_text = QLabel(
             "This will install all dependencies required for TensorRT Image Upscaler:\n\n"
-            "<b>Python packages:</b> PySide6, numpy, Pillow, opencv-python, numba, fpng-py, cuda-python\n\n"
-            "<b>TensorRT:</b> tensorrt (requires NVIDIA GPU and CUDA toolkit)\n\n"
+            "<b>Python packages:</b> PySide6, numpy, Pillow, opencv-python, numba, fpng-py\n\n"
+            "<b>CUDA/TensorRT:</b> cuda-python, pycuda, tensorrt (requires NVIDIA GPU and CUDA toolkit)\n\n"
             "<b>External tools:</b> ffmpeg, gifski, avifenc (animated output), "
             "pngquant, pingo (PNG optimization)\n\n"
             "<b>Prerequisites:</b>\n"
             "- NVIDIA GPU with CUDA support\n"
-            "- CUDA Toolkit 12.x installed\n"
-            "- cuDNN 8.x or 9.x installed"
+            "- CUDA Toolkit 12.x installed"
         )
         info_text.setTextFormat(Qt.RichText)
         info_text.setWordWrap(True)
