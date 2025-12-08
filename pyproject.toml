@@ -28,6 +28,8 @@ dependencies = [
     "Pillow>=10.0.0",
     "PySide6>=6.5.0",
     "cuda-python",
+    "pycuda",
+    "tensorrt",
 ]
 
 [project.optional-dependencies]

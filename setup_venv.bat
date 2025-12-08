@@ -111,9 +111,12 @@ echo Installing CUDA/TensorRT dependencies...
 pip install cuda-python
 
 echo.
-echo NOTE: TensorRT must be installed separately.
-echo   Option 1: pip install tensorrt (if available for your CUDA version)
-echo   Option 2: Download from NVIDIA Developer website
+echo Installing CUDA/TensorRT dependencies...
+pip install pycuda
+
+echo.
+echo Installing TensorRT...
+pip install tensorrt
 echo.
 
 echo ===============================================

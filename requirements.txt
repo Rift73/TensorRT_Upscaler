@@ -15,16 +15,4 @@ fpng-py>=0.0.4            # 12-19x faster PNG encoding
 
 # === CUDA/TensorRT (required for inference) ===
 cuda-python               # CUDA Python bindings
-# tensorrt>=10.0.0        # Install separately - see note below
-
-# === Note on TensorRT ===
-# TensorRT must be installed based on your CUDA version:
-#   pip install tensorrt
-#
-# If pip install doesn't work, download from NVIDIA:
-#   https://developer.nvidia.com/tensorrt
-#
-# Prerequisites:
-#   - NVIDIA GPU with CUDA support
-#   - CUDA Toolkit 12.x
-#   - cuDNN 8.x or 9.x
+tensorrt>=10.0.0          

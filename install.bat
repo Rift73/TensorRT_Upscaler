@@ -81,7 +81,7 @@ python -m pip install --upgrade pip -q
 
 echo.
 echo [+] Installing core dependencies...
-pip install numpy Pillow PySide6 cuda-python -q
+pip install numpy Pillow PySide6 cuda-python pycuda tensorrt -q
 
 echo.
 echo [+] Installing performance dependencies...
@@ -103,9 +103,6 @@ echo.
 echo To use the CLI:
 echo   - run_cli.bat [arguments]
 echo   - Or: venv\Scripts\python -m tensorrt_upscaler.cli --help
-echo.
-echo NOTE: TensorRT must be installed separately:
-echo   pip install tensorrt
 echo.
 
 :: Ask to create desktop shortcut
