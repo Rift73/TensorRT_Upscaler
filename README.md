@@ -1,6 +1,8 @@
-# TensorRT Upscaler v2
+# TensorRT Upscaler
 
-GPU-accelerated image upscaler with direct TensorRT inference. No VapourSynth required.
+GPU-accelerated image upscaler with direct TensorRT inference.
+
+This is a direct upgrade over the prototype.
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)
 ![TensorRT 10.0+](https://img.shields.io/badge/TensorRT-10.0+-green.svg)
@@ -10,7 +12,7 @@ GPU-accelerated image upscaler with direct TensorRT inference. No VapourSynth re
 
 **Core**
 - Direct ONNX → TensorRT inference with engine caching
-- Tiled processing with overlap blending for arbitrary image sizes
+- Asynchronous image processing for maximum parallel process, throughput and minimum overhead
 - FP32/FP16/BF16 precision modes
 - Alpha channel preservation
 - Animated format support (GIF, WebP, APNG)
@@ -19,9 +21,9 @@ GPU-accelerated image upscaler with direct TensorRT inference. No VapourSynth re
 - Drag & drop files or folders
 - Before/after split comparison with draggable slider
 - Crop preview for testing upscale quality
-- Watch folder mode for automated processing
-- Multi-model queue for batch processing with different models
-- Resume interrupted batches
+- Watch folder mode for automated processing*
+- Multi-model queue for batch processing with different models*
+- Resume interrupted batches*
 - Presets, themes, keyboard shortcuts
 - System tray integration
 
