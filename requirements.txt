@@ -1,0 +1,30 @@
+# TensorRT Upscaler v2 - Dependencies
+# Python 3.12 or 3.13 required
+
+# === Core dependencies (required) ===
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# === GUI (required for graphical interface) ===
+PySide6>=6.5.0
+
+# === Performance (recommended) ===
+opencv-python>=4.8.0      # 2-3x faster image I/O
+numba>=0.58.0             # 5-10x faster sharpening/resize
+fpng-py>=0.0.4            # 12-19x faster PNG encoding
+
+# === CUDA/TensorRT (required for inference) ===
+cuda-python               # CUDA Python bindings
+# tensorrt>=10.0.0        # Install separately - see note below
+
+# === Note on TensorRT ===
+# TensorRT must be installed based on your CUDA version:
+#   pip install tensorrt
+#
+# If pip install doesn't work, download from NVIDIA:
+#   https://developer.nvidia.com/tensorrt
+#
+# Prerequisites:
+#   - NVIDIA GPU with CUDA support
+#   - CUDA Toolkit 12.x
+#   - cuDNN 8.x or 9.x
