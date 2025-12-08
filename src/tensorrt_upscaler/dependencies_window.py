@@ -55,6 +55,11 @@ CUDA_PACKAGES = [
     "tensorrt>=10.0.0",
 ]
 
+# DirectML packages (alternative backend for AMD/Intel GPUs)
+DIRECTML_PACKAGES = [
+    "onnxruntime-directml>=1.16.0",
+]
+
 # External tools to download
 # Format: (name, url, extract_type, path_subdir)
 # path_subdir: subdirectory within TOOLS_DIR to add to PATH
@@ -145,11 +150,13 @@ class InstallWorker(QThread):
         self,
         install_pip: bool = True,
         install_tensorrt: bool = True,
+        install_directml: bool = True,
         install_tools: bool = True,
     ):
         super().__init__()
         self._install_pip = install_pip
         self._install_tensorrt = install_tensorrt
+        self._install_directml = install_directml
         self._install_tools = install_tools
         self._cancelled = False
 
@@ -165,6 +172,7 @@ class InstallWorker(QThread):
 
             pip_to_install = []
             cuda_to_install = []
+            dml_to_install = []
             tools_to_install = []
 
             if self._install_pip:
@@ -185,6 +193,15 @@ class InstallWorker(QThread):
                         cuda_to_install.append(pkg)
                         self.progress_signal.emit(f"  {pkg_name}: needs installation")
 
+            if self._install_directml:
+                for pkg in DIRECTML_PACKAGES:
+                    pkg_name = pkg.split(">=")[0].split("==")[0]
+                    if _is_package_installed(pkg):
+                        self.progress_signal.emit(f"  {pkg_name}: already installed")
+                    else:
+                        dml_to_install.append(pkg)
+                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
+
             if self._install_tools:
                 for name, url, extract_type, path_subdir in EXTERNAL_TOOLS:
                     if _is_tool_installed(name):
@@ -194,7 +211,7 @@ class InstallWorker(QThread):
                         self.progress_signal.emit(f"  {name}: needs installation")
 
             # Calculate total steps (only packages that need installation)
-            total_steps = len(pip_to_install) + len(cuda_to_install) + len(tools_to_install)
+            total_steps = len(pip_to_install) + len(cuda_to_install) + len(dml_to_install) + len(tools_to_install)
 
             if total_steps == 0:
                 self.progress_signal.emit("\n=== All dependencies already installed! ===\n")
@@ -237,6 +254,23 @@ class InstallWorker(QThread):
                     if not success:
                         self.progress_signal.emit(f"Warning: Failed to install {pkg}")
                         self.progress_signal.emit("  You may need to install TensorRT manually from NVIDIA.")
+
+            # Install DirectML packages
+            if dml_to_install:
+                self.progress_signal.emit("\n=== Installing DirectML packages ===\n")
+                self.progress_signal.emit("Note: DirectML works with any DirectX 12 GPU (AMD, Intel, NVIDIA).\n")
+                for pkg in dml_to_install:
+                    if self._cancelled:
+                        self.finished_signal.emit(False, "Installation cancelled.")
+                        return
+                    current_step += 1
+                    pkg_name = pkg.split(">=")[0].split("==")[0]
+                    self.status_signal.emit(f"Installing {pkg_name}...", current_step, total_steps)
+                    self.progress_signal.emit(f"Installing {pkg}...")
+                    success, msg = self._install_pip_package(pkg)
+                    self.progress_signal.emit(msg)
+                    if not success:
+                        self.progress_signal.emit(f"Warning: Failed to install {pkg}")
 
             # Install external tools
             if tools_to_install:
@@ -439,12 +473,13 @@ class DependenciesWindow(QDialog):
         info_text = QLabel(
             "This will install all dependencies required for TensorRT Image Upscaler:\n\n"
             "<b>Python packages:</b> PySide6, numpy, Pillow, opencv-python, numba, fpng-py\n\n"
-            "<b>CUDA/TensorRT:</b> cuda-python, pycuda, tensorrt (requires NVIDIA GPU and CUDA toolkit)\n\n"
+            "<b>CUDA/TensorRT:</b> cuda-python, pycuda, tensorrt (requires NVIDIA GPU + CUDA toolkit)\n\n"
+            "<b>DirectML:</b> onnxruntime-directml (alternative backend for AMD/Intel GPUs)\n\n"
             "<b>External tools:</b> ffmpeg, gifski, avifenc (animated output), "
             "pngquant, pingo (PNG optimization)\n\n"
             "<b>Prerequisites:</b>\n"
-            "- NVIDIA GPU with CUDA support\n"
-            "- CUDA Toolkit 12.x installed"
+            "- TensorRT: NVIDIA GPU with CUDA Toolkit 12.x\n"
+            "- DirectML: Any DirectX 12 compatible GPU"
         )
         info_text.setTextFormat(Qt.RichText)
         info_text.setWordWrap(True)
@@ -515,6 +550,7 @@ class DependenciesWindow(QDialog):
         self._worker = InstallWorker(
             install_pip=True,
             install_tensorrt=True,
+            install_directml=True,
             install_tools=True,
         )
         self._worker.progress_signal.connect(self._on_progress)

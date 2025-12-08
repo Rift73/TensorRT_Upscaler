@@ -4,6 +4,7 @@
 __version__ = "2.0.0"
 
 from .engine import TensorRTEngine
+from .dml_engine import DirectMLEngine, is_directml_available
 from .upscaler import ImageUpscaler
 from .sharpening import cas_sharpen, cas_sharpen_pil, cas_sharpen_array
 from .resize import resize_pil, resize_hermite, resize_lanczos, resize_array, compute_scaled_size
@@ -19,6 +20,8 @@ from .fast_io import (
 
 __all__ = [
     "TensorRTEngine",
+    "DirectMLEngine",
+    "is_directml_available",
     "ImageUpscaler",
     "cas_sharpen",
     "cas_sharpen_pil",

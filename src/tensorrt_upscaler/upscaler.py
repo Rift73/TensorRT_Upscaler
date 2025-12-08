@@ -19,6 +19,7 @@ from typing import Optional, Tuple, Callable, Dict, List
 from concurrent.futures import ThreadPoolExecutor
 
 from .engine import TensorRTEngine
+from .dml_engine import DirectMLEngine, is_directml_available
 from .fast_io import load_image_fast, save_image_fast, CV2_AVAILABLE
 
 # Try to import Numba for JIT acceleration
@@ -114,39 +115,54 @@ class ImageUpscaler:
         fp16: bool = False,
         bf16: bool = True,
         tf32: bool = False,
+        backend: str = "tensorrt",
     ):
         """
-        Initialize upscaler with TensorRT engine.
+        Initialize upscaler with TensorRT or DirectML engine.
 
         Args:
             onnx_path: Path to ONNX super-resolution model
             tile_size: Tile size (width, height) for processing - also used as max engine shape
             overlap: Overlap between tiles in pixels
             fp16: Enable FP16 precision
-            bf16: Enable BF16 precision (default)
-            tf32: Enable TF32 precision
+            bf16: Enable BF16 precision (default, TensorRT only)
+            tf32: Enable TF32 precision (TensorRT only)
+            backend: "tensorrt" or "directml"
         """
         self.tile_w, self.tile_h = tile_size
         self.overlap = overlap
+        self.backend = backend
 
         # Align tile size to 64
         self.tile_w = (self.tile_w // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
         self.tile_h = (self.tile_h // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
 
-        # Use tile size as max shape (separate width and height)
-        max_shape = (1, 3, self.tile_h, self.tile_w)
-        opt_shape = (1, 3, self.tile_h, self.tile_w)
-        min_shape = (1, 3, 64, 64)
+        if backend == "directml":
+            if not is_directml_available():
+                raise RuntimeError(
+                    "DirectML backend requested but not available. "
+                    "Install with: pip install onnxruntime-directml"
+                )
+            self.engine = DirectMLEngine(
+                onnx_path=onnx_path,
+                fp16=fp16,
+            )
+        else:
+            # Default to TensorRT
+            # Use tile size as max shape (separate width and height)
+            max_shape = (1, 3, self.tile_h, self.tile_w)
+            opt_shape = (1, 3, self.tile_h, self.tile_w)
+            min_shape = (1, 3, 64, 64)
 
-        self.engine = TensorRTEngine(
-            onnx_path=onnx_path,
-            fp16=fp16,
-            bf16=bf16,
-            tf32=tf32,
-            min_shape=min_shape,
-            opt_shape=opt_shape,
-            max_shape=max_shape,
-        )
+            self.engine = TensorRTEngine(
+                onnx_path=onnx_path,
+                fp16=fp16,
+                bf16=bf16,
+                tf32=tf32,
+                min_shape=min_shape,
+                opt_shape=opt_shape,
+                max_shape=max_shape,
+            )
 
         self.scale = self.engine.model_scale
 
@@ -493,6 +509,7 @@ def upscale_file(
     fp16: bool = False,
     bf16: bool = True,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    backend: str = "tensorrt",
 ) -> bool:
     """
     Convenience function to upscale an image file.
@@ -507,6 +524,7 @@ def upscale_file(
         fp16: Use FP16 precision
         bf16: Use BF16 precision
         progress_callback: Progress callback
+        backend: "tensorrt" or "directml"
 
     Returns:
         True if successful
@@ -518,6 +536,7 @@ def upscale_file(
             overlap=overlap,
             fp16=fp16,
             bf16=bf16,
+            backend=backend,
         )
 
         # Use fast I/O

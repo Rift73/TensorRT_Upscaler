@@ -26,6 +26,7 @@ class Config:
     use_fp16: bool = False
     use_bf16: bool = True
     use_tf32: bool = False
+    backend: str = "tensorrt"  # tensorrt or directml
 
     # Output filename options (#9-13)
     save_next_to_input: bool = False

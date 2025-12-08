@@ -157,6 +157,7 @@ class UpscaleWorker(QThread):
                     overlap=cfg.tile_overlap,
                     fp16=cfg.use_fp16,
                     bf16=cfg.use_bf16,
+                    backend=cfg.backend,
                 )
 
             # Setup async saver for background PNG writing
@@ -368,6 +369,7 @@ class ClipboardWorker(QThread):
                 overlap=cfg.tile_overlap,
                 fp16=cfg.use_fp16,
                 bf16=cfg.use_bf16,
+                backend=cfg.backend,
             )
 
             # Upscale with progress
@@ -787,6 +789,12 @@ class MainWindow(QMainWindow):
         self._btn_auto_tile.setToolTip("Auto-detect optimal tile size based on GPU VRAM")
         self._btn_auto_tile.setFixedWidth(60)
 
+        # Backend selection dropdown
+        self._backend_combo = QComboBox()
+        self._backend_combo.addItems(["TensorRT", "DirectML"])
+        self._backend_combo.setToolTip("TensorRT: NVIDIA GPUs (fastest)\nDirectML: Any GPU (AMD/Intel/NVIDIA)")
+        self._backend_combo.setFixedWidth(100)
+
         # Checkboxes
         self._same_dir_check = QCheckBox("Save next to input with suffix:")
         self._same_dir_suffix_edit = QLineEdit("_upscaled")
@@ -1020,6 +1028,9 @@ class MainWindow(QMainWindow):
         tile_layout.addWidget(QLabel("Height:"))
         tile_layout.addWidget(self._tile_h_combo)
         tile_layout.addWidget(self._btn_auto_tile)
+        tile_layout.addSpacing(20)
+        tile_layout.addWidget(QLabel("Backend:"))
+        tile_layout.addWidget(self._backend_combo)
         tile_layout.addStretch()
         main_layout.addWidget(tile_box, row, 0, 1, 4)
         row += 1
@@ -1487,6 +1498,9 @@ class MainWindow(QMainWindow):
         self._upscale_check.setChecked(cfg.upscale_enabled)
         self._fp16_check.setChecked(cfg.use_fp16)
         self._bf16_check.setChecked(cfg.use_bf16)
+        # Backend dropdown
+        backend_text = "TensorRT" if cfg.backend == "tensorrt" else "DirectML"
+        self._backend_combo.setCurrentText(backend_text)
 
         # Output
         if cfg.last_output_path:
@@ -1528,6 +1542,8 @@ class MainWindow(QMainWindow):
         cfg.upscale_enabled = self._upscale_check.isChecked()
         cfg.use_fp16 = self._fp16_check.isChecked()
         cfg.use_bf16 = self._bf16_check.isChecked()
+        # Backend
+        cfg.backend = "directml" if self._backend_combo.currentText() == "DirectML" else "tensorrt"
 
         # Output
         cfg.last_output_path = self._output_edit.text()
