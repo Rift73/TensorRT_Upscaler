@@ -105,9 +105,19 @@ class DirectMLEngine:
             ]
         )
 
-        # Get input/output names
-        self.input_name = self.session.get_inputs()[0].name
+        # Get input/output names and types
+        input_info = self.session.get_inputs()[0]
+        self.input_name = input_info.name
         self.output_name = self.session.get_outputs()[0].name
+
+        # Detect input data type
+        input_type = input_info.type
+        if 'float16' in input_type:
+            self.input_dtype = np.float16
+            print(f"[DirectML] Model uses FP16 precision")
+        else:
+            self.input_dtype = np.float32
+            print(f"[DirectML] Model uses FP32 precision")
 
         print(f"[DirectML] Session created successfully")
         print(f"[DirectML] Input: {self.input_name}, Output: {self.output_name}")
@@ -128,7 +138,8 @@ class DirectMLEngine:
         if input_array.ndim == 3:
             input_array = np.transpose(input_array, (2, 0, 1))[np.newaxis, ...]
 
-        input_array = np.ascontiguousarray(input_array.astype(np.float32))
+        # Convert to model's expected dtype
+        input_array = np.ascontiguousarray(input_array.astype(self.input_dtype))
 
         # Run inference
         outputs = self.session.run(
@@ -138,8 +149,8 @@ class DirectMLEngine:
 
         output_array = outputs[0]
 
-        # Convert back to HWC
-        output_array = np.transpose(output_array[0], (1, 2, 0))
+        # Convert back to HWC and float32
+        output_array = np.transpose(output_array[0], (1, 2, 0)).astype(np.float32)
         np.clip(output_array, 0.0, 1.0, out=output_array)
 
         return output_array
@@ -155,6 +166,10 @@ class DirectMLEngine:
         Returns:
             Upscaled image as numpy array (H*scale, W*scale, C)
         """
+        # Convert to model's expected dtype if needed
+        if input_array.dtype != self.input_dtype:
+            input_array = input_array.astype(self.input_dtype)
+
         # Run inference
         outputs = self.session.run(
             [self.output_name],
@@ -163,8 +178,8 @@ class DirectMLEngine:
 
         output_array = outputs[0]
 
-        # Convert back to HWC
-        output_array = np.transpose(output_array[0], (1, 2, 0))
+        # Convert back to HWC and float32
+        output_array = np.transpose(output_array[0], (1, 2, 0)).astype(np.float32)
         np.clip(output_array, 0.0, 1.0, out=output_array)
 
         return output_array
