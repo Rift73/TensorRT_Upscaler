@@ -285,11 +285,43 @@ def run_pingo(input_path: str) -> bool:
     Run pingo for lossless PNG optimization.
 
     Feature #49
+
+    Note: pingo doesn't handle Unicode paths well, so we copy to a temp file
+    with an ASCII name, optimize it, then copy back.
     """
+    import tempfile
+    import shutil
+    from pathlib import Path
+
     try:
-        cmd = ["pingo", "-lossless", "-s4", input_path]
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
-        return result.returncode == 0
+        input_file = Path(input_path)
+
+        # Check if path contains non-ASCII characters
+        try:
+            input_path.encode('ascii')
+            has_unicode = False
+        except UnicodeEncodeError:
+            has_unicode = True
+
+        if has_unicode:
+            # Use temp file workaround for Unicode paths
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_file = Path(temp_dir) / "temp_pingo.png"
+                shutil.copy2(input_file, temp_file)
+
+                cmd = ["pingo", "-lossless", "-s4", str(temp_file)]
+                result = subprocess.run(cmd, capture_output=True, timeout=120)
+
+                if result.returncode == 0:
+                    # Copy optimized file back
+                    shutil.copy2(temp_file, input_file)
+                    return True
+                return False
+        else:
+            # Direct path for ASCII-only paths
+            cmd = ["pingo", "-lossless", "-s4", input_path]
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            return result.returncode == 0
 
     except FileNotFoundError:
         print("pingo not found in PATH")
