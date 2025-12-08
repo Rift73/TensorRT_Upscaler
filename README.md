@@ -11,9 +11,8 @@ This is a direct upgrade over the prototype.
 ## Features
 
 **Core**
-- Direct ONNX → TensorRT inference with engine caching
+- Direct TensorRT inference
 - Asynchronous image processing for maximum parallel process, throughput and minimum overhead
-- FP32/FP16/BF16 precision modes
 - Alpha channel preservation
 - Animated format support (GIF, WebP, APNG)
 
@@ -26,6 +25,8 @@ This is a direct upgrade over the prototype.
 - Resume interrupted batches*
 - Presets, themes, keyboard shortcuts
 - System tray integration
+
+* not yet tested
 
 ## Requirements
 
