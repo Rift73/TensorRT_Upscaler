@@ -108,16 +108,11 @@ pip install opencv-python>=4.8.0 numba>=0.58.0 fpng-py>=0.0.4
 
 echo.
 echo Installing CUDA/TensorRT dependencies...
-pip install cuda-python
+pip install cuda-python pycuda tensorrt
 
 echo.
-echo Installing CUDA/TensorRT dependencies...
-pip install pycuda
-
-echo.
-echo Installing TensorRT...
-pip install tensorrt
-echo.
+echo Installing package in development mode...
+pip install -e .
 
 echo ===============================================
 echo  Setup Complete!
@@ -128,8 +123,5 @@ echo     venv\Scripts\activate.bat
 echo.
 echo To run the GUI:
 echo     python run.py
-echo.
-echo To install TensorRT (if not already installed):
-echo     pip install tensorrt
 echo.
 pause

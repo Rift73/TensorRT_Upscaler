@@ -15,4 +15,5 @@ fpng-py>=0.0.4            # 12-19x faster PNG encoding
 
 # === CUDA/TensorRT (required for inference) ===
 cuda-python               # CUDA Python bindings
-tensorrt>=10.0.0          
+pycuda                    # PyCUDA for memory management
+tensorrt>=10.0.0          # TensorRT inference engine
