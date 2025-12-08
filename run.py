@@ -64,7 +64,7 @@ def main():
     
     # Try to import and run GUI
     try:
-        from tensorrt_upscaler.gui import main as gui_main
+        from tensorrt_upscaler.main_window import main as gui_main
         gui_main()
     except ImportError as e:
         show_error_dialog(f"Failed to import GUI module:\n\n{e}")

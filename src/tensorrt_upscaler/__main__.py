@@ -13,7 +13,7 @@ def main():
         cli_main()
     else:
         # GUI mode
-        from .gui import main as gui_main
+        from .main_window import main as gui_main
         gui_main()
 
 

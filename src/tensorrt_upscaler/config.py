@@ -27,6 +27,7 @@ class Config:
     use_bf16: bool = True
     use_tf32: bool = False
     backend: str = "tensorrt"  # tensorrt or directml
+    disable_tile_limit: bool = False  # Disable 64-alignment requirement for tiles
 
     # Output filename options (#9-13)
     save_next_to_input: bool = False
@@ -41,6 +42,8 @@ class Config:
     # Sharpening (#18-19)
     sharpen_enabled: bool = False
     sharpen_value: float = 0.5
+    sharpen_method: str = "none"  # none, cas, adaptive
+    sharpen_anime_mode: bool = False  # Only darken edges (for anime/cartoon)
 
     # Custom resolution (#20-25)
     custom_res_enabled: bool = False

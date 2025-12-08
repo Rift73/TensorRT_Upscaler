@@ -1,6 +1,11 @@
 """
 TensorRT Upscaler v2 GUI - Full-featured PySide6 interface.
 Layout matches vapoursynth_image_upscaler for consistency.
+
+Refactored structure:
+- gui/workers.py - UpscaleWorker, ClipboardWorker
+- gui/widgets.py - DropLineEdit, ThumbnailLabel
+- dialogs/ - Dialog classes (CustomResolutionDialog, etc.)
 """
 
 import os
@@ -65,6 +70,9 @@ from .utils import (
     optimize_png,
     should_skip_image,
 )
+
+# Import from refactored modules
+from .gui import UpscaleWorker, ClipboardWorker, DropLineEdit, ThumbnailLabel
 from .dialogs import (
     CustomResolutionDialog,
     AnimatedOutputDialog,
@@ -75,7 +83,9 @@ from .dialogs import (
     ModelQueueDialog,
     ComparisonDialog,
     CropPreviewDialog,
+    SharpenDialog,
 )
+
 from .dependencies_window import DependenciesWindow
 from .upscaler import ImageUpscaler
 from .sharpening import cas_sharpen_pil, cas_sharpen_array
@@ -92,602 +102,8 @@ from .fast_io import (
 from .theme import ThemeManager, AVAILABLE_THEMES, DEFAULT_THEME
 
 
-class DropLineEdit(QLineEdit):
-    """Line edit that accepts dropped folders."""
-
-    folder_dropped = Signal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event: QDropEvent):
-        urls = event.mimeData().urls()
-        if urls:
-            path = urls[0].toLocalFile()
-            if os.path.isdir(path):
-                self.setText(path)
-                self.folder_dropped.emit(path)
-            elif os.path.isfile(path):
-                # If file dropped, use its parent directory
-                self.setText(os.path.dirname(path))
-                self.folder_dropped.emit(os.path.dirname(path))
-
-
-class UpscaleWorker(QThread):
-    """Background worker for upscaling images with full feature support.
-
-    Optimizations:
-    - Async prefetching overlaps I/O with GPU inference
-    - Async saving writes PNGs in background thread
-    - Progress callbacks emit only when needed (reduces GIL contention)
-    """
-
-    progress = Signal(int, int)  # current_tile, total_tiles
-    file_progress = Signal(int, int, str)  # current_file, total_files, current_file_path
-    finished = Signal(bool, str)  # success, message
-    file_done = Signal(str, str, float)  # input_path, output_path, elapsed_time
-    file_skipped = Signal(str, str)  # input_path, reason
-    checkpoint_updated = Signal(int, list)  # current_index, remaining_files
-
-    def __init__(self, files: List[str], config, onnx_path: str, input_root: str = "", start_index: int = 0):
-        super().__init__()
-        self.files = files
-        self.config = config
-        self.onnx_path = onnx_path
-        self.input_root = input_root
-        self._cancelled = False
-        self._skipped_count = 0
-        self._start_index = start_index  # For resume support
-
-    def run(self):
-        try:
-            cfg = self.config
-
-            # Build engine only if upscaling is enabled
-            upscaler = None
-            if cfg.upscale_enabled:
-                upscaler = ImageUpscaler(
-                    onnx_path=self.onnx_path,
-                    tile_size=(cfg.tile_width, cfg.tile_height),
-                    overlap=cfg.tile_overlap,
-                    fp16=cfg.use_fp16,
-                    bf16=cfg.use_bf16,
-                    backend=cfg.backend,
-                )
-
-            # Setup async saver for background PNG writing
-            async_saver = AsyncImageSaver(max_queue=6)
-            async_saver.start()
-
-            # Setup async loader for prefetching
-            async_loader = AsyncImageLoader()
-
-            try:
-                total_files = len(self.files)
-
-                # Prefetch first file
-                if total_files > 0:
-                    async_loader.prefetch(self.files[0])
-
-                for i, input_path in enumerate(self.files):
-                    # Skip already processed files (for resume)
-                    if i < self._start_index:
-                        continue
-
-                    if self._cancelled:
-                        # Emit checkpoint before exiting
-                        remaining = self.files[i:]
-                        self.checkpoint_updated.emit(i, remaining)
-                        self.finished.emit(False, "Cancelled")
-                        return
-
-                    file_start = time.perf_counter()
-                    self.file_progress.emit(i + 1, total_files, input_path)
-
-                    # Emit checkpoint for auto-save
-                    if cfg.auto_checkpoint:
-                        remaining = self.files[i:]
-                        self.checkpoint_updated.emit(i, remaining)
-
-                    # Generate output path first (needed for skip check)
-                    output_dir = cfg.last_output_path or os.path.dirname(input_path)
-                    output_path = generate_output_path(
-                        input_path=input_path,
-                        output_dir=output_dir,
-                        suffix=cfg.same_dir_suffix,
-                        save_next_to_input=cfg.save_next_to_input,
-                        manga_folder_mode=cfg.manga_folder_mode,
-                        append_model_suffix=cfg.append_model_suffix,
-                        model_name=Path(self.onnx_path).stem if cfg.append_model_suffix else "",
-                        overwrite=cfg.overwrite_existing,
-                        input_root=self.input_root,
-                        output_format="png",
-                    )
-
-                    # Check if file should be skipped
-                    should_skip, skip_reason = should_skip_image(
-                        image_path=input_path,
-                        output_path=output_path,
-                        skip_existing=cfg.skip_existing,
-                        conditional_enabled=cfg.conditional_enabled,
-                        min_width=cfg.conditional_min_width,
-                        min_height=cfg.conditional_min_height,
-                        max_width=cfg.conditional_max_width,
-                        max_height=cfg.conditional_max_height,
-                        aspect_filter_enabled=cfg.aspect_filter_enabled,
-                        aspect_mode=cfg.aspect_filter_mode,
-                        aspect_min_ratio=cfg.aspect_filter_min_ratio,
-                        aspect_max_ratio=cfg.aspect_filter_max_ratio,
-                    )
-
-                    if should_skip:
-                        self._skipped_count += 1
-                        self.file_skipped.emit(input_path, skip_reason)
-                        # Prefetch next file if we're skipping
-                        if i + 1 < total_files:
-                            async_loader.prefetch(self.files[i + 1])
-                        continue
-
-                    # Load image using fast I/O (or prefetched)
-                    img, img_has_alpha = async_loader.get(input_path)
-                    height, width = img.shape[:2]
-
-                    # Extract metadata (ICC profile, EXIF) if preservation is enabled
-                    img_metadata = None
-                    if cfg.preserve_metadata:
-                        img_metadata = extract_image_metadata(input_path)
-
-                    # Start prefetching next image immediately after loading current
-                    if i + 1 < total_files:
-                        async_loader.prefetch(self.files[i + 1])
-
-                    # Feature #31-35: Pre-scale
-                    if cfg.prescale_enabled:
-                        new_size = compute_scaled_size(
-                            width, height,
-                            cfg.prescale_mode,
-                            cfg.prescale_width,
-                            cfg.prescale_height,
-                        )
-                        img = resize_array(img, new_size, cfg.prescale_kernel, img_has_alpha)
-                        height, width = img.shape[:2]
-
-                    # Feature #14: Upscale (can be disabled)
-                    if cfg.upscale_enabled and upscaler:
-                        img = upscaler.upscale_array(
-                            img,
-                            has_alpha=img_has_alpha,
-                            progress_callback=lambda c, t: self.progress.emit(c, t)
-                        )
-                        height, width = img.shape[:2]
-
-                    # Feature #20-25: Custom resolution
-                    if cfg.custom_res_enabled:
-                        new_size = compute_scaled_size(
-                            width, height,
-                            cfg.custom_res_mode,
-                            cfg.custom_res_width,
-                            cfg.custom_res_height,
-                            keep_aspect=cfg.custom_res_keep_aspect,
-                        )
-                        img = resize_array(img, new_size, cfg.custom_res_kernel, img_has_alpha)
-
-                    # Feature #18-19: Sharpening
-                    if cfg.sharpen_enabled and cfg.sharpen_value > 0:
-                        img = cas_sharpen_array(img, cfg.sharpen_value, img_has_alpha)
-
-                    # Output path was already generated above for skip check
-                    # Save as PNG asynchronously (background thread)
-                    # Pass metadata for ICC profile and EXIF preservation
-                    async_saver.save(img, output_path, img_has_alpha, img_metadata)
-
-                    # Feature #47-49: PNG optimization (must wait for save to complete)
-                    # Note: optimization runs after async save completes
-                    if cfg.png_quantize_enabled or cfg.png_optimize_enabled:
-                        # Wait for this file to be saved before optimizing
-                        async_saver.wait_pending()
-                        optimize_png(
-                            output_path,
-                            quantize=cfg.png_quantize_enabled,
-                            quantize_colors=cfg.png_quantize_colors,
-                            optimize=cfg.png_optimize_enabled,
-                        )
-
-                    # Feature #26-30: Secondary output
-                    if cfg.secondary_enabled:
-                        sec_size = compute_scaled_size(
-                            img.shape[1], img.shape[0],
-                            cfg.secondary_mode,
-                            cfg.secondary_width,
-                            cfg.secondary_height,
-                        )
-                        sec_img = resize_array(img, sec_size, cfg.secondary_kernel, img_has_alpha)
-
-                        # Secondary output path (also PNG)
-                        sec_dir = os.path.dirname(output_path)
-                        sec_name = Path(output_path).stem + "_secondary.png"
-                        sec_path = os.path.join(sec_dir, sec_name)
-                        async_saver.save(sec_img, sec_path, img_has_alpha, img_metadata)
-
-                    file_elapsed = time.perf_counter() - file_start
-                    self.file_done.emit(input_path, output_path, file_elapsed)
-
-                # Wait for all saves to complete
-                async_saver.wait_pending()
-
-                processed = total_files - self._skipped_count
-                if self._skipped_count > 0:
-                    self.finished.emit(True, f"Completed {processed} files ({self._skipped_count} skipped)")
-                else:
-                    self.finished.emit(True, f"Completed {processed} files")
-
-            finally:
-                async_saver.stop()
-                async_loader.shutdown()
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.finished.emit(False, str(e))
-
-    def cancel(self):
-        self._cancelled = True
-
-
-class ClipboardWorker(QThread):
-    """Background worker for upscaling a single image to clipboard."""
-
-    progress = Signal(int, int)  # current_tile, total_tiles
-    finished = Signal(bool, str, object)  # success, message, result_image (QImage or None)
-
-    def __init__(self, image_path: str, config, onnx_path: str):
-        super().__init__()
-        self.image_path = image_path
-        self.config = config
-        self.onnx_path = onnx_path
-        self._cancelled = False
-
-    def run(self):
-        try:
-            import numpy as np
-            from PIL import Image as PILImage
-
-            cfg = self.config
-
-            # Load image
-            img, img_has_alpha = load_image_fast(self.image_path)
-
-            # Build upscaler
-            upscaler = ImageUpscaler(
-                onnx_path=self.onnx_path,
-                tile_size=(cfg.tile_width, cfg.tile_height),
-                overlap=cfg.tile_overlap,
-                fp16=cfg.use_fp16,
-                bf16=cfg.use_bf16,
-                backend=cfg.backend,
-            )
-
-            # Upscale with progress
-            def on_progress(current, total):
-                if not self._cancelled:
-                    self.progress.emit(current, total)
-
-            result = upscaler.upscale_array(img, img_has_alpha, on_progress)
-
-            if self._cancelled:
-                self.finished.emit(False, "Cancelled", None)
-                return
-
-            # Convert to PIL then QImage
-            result_uint8 = (result * 255.0).clip(0, 255).astype(np.uint8)
-            if img_has_alpha and result.shape[2] == 4:
-                pil_img = PILImage.fromarray(result_uint8, mode="RGBA")
-            else:
-                pil_img = PILImage.fromarray(result_uint8, mode="RGB")
-
-            # Convert PIL to QImage
-            from PIL.ImageQt import ImageQt
-            qimg = ImageQt(pil_img).copy()  # .copy() ensures data persists
-
-            self.finished.emit(True, "Upscaled and copied to clipboard", qimg)
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.finished.emit(False, str(e), None)
-
-    def cancel(self):
-        self._cancelled = True
-
-
-class ThumbnailLabel(QLabel):
-    """Label that displays image with pan and zoom support.
-
-    - Ctrl+Scroll to zoom in/out
-    - Click and drag to pan when zoomed in
-    - Double-click to reset to fit view
-    """
-
-    MAX_WIDTH = 1280
-    MAX_HEIGHT = 640
-    ZOOM_LEVELS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]  # Available zoom levels
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(QSize(400, 200))
-        self.setAlignment(Qt.AlignCenter)
-        self.setMouseTracking(True)
-        self.setCursor(Qt.ArrowCursor)
-        self._clear()
-        self._current_path = None
-        self._dimensions = None
-        self._original_pixmap: Optional[QPixmap] = None
-        self._pil_image = None  # Cache full resolution image
-
-        # Zoom and pan state
-        self._zoom_index = 0  # Index into ZOOM_LEVELS, 0 = fit
-        self._zoom_scale = 1.0  # Current zoom scale (1.0 = 100%)
-        self._is_fit_mode = True  # True = fit to view, False = custom zoom
-        self._pan_x = 0.5  # Pan position (0-1, center of view in image)
-        self._pan_y = 0.5
-        self._dragging = False
-        self._drag_start_x = 0
-        self._drag_start_y = 0
-        self._drag_start_pan_x = 0.0
-        self._drag_start_pan_y = 0.0
-
-    def _clear(self):
-        self.setText("(no thumbnail)")
-        self.setPixmap(QPixmap())
-        self._current_path = None
-        self._dimensions = None
-        self._original_pixmap = None
-        self._pil_image = None
-        self._zoom_index = 0
-        self._zoom_scale = 1.0
-        self._is_fit_mode = True
-        self._pan_x = 0.5
-        self._pan_y = 0.5
-
-    def load_image(self, path: str):
-        """Load and display thumbnail using PIL with Lanczos resampling."""
-        try:
-            self._current_path = path
-
-            # Load with PIL to get dimensions and do Lanczos resize
-            from PIL import Image as PILImage
-            from PIL.ImageQt import ImageQt
-            pil_img = PILImage.open(path)
-
-            # Get original dimensions before any processing
-            self._dimensions = (pil_img.width, pil_img.height)
-
-            # Ensure we have a standard mode for display
-            if pil_img.mode not in ("RGB", "RGBA"):
-                if pil_img.mode == "P" and "transparency" in pil_img.info:
-                    pil_img = pil_img.convert("RGBA")
-                elif pil_img.mode in ("LA", "PA"):
-                    pil_img = pil_img.convert("RGBA")
-                else:
-                    pil_img = pil_img.convert("RGB")
-
-            # Cache full resolution for zoom
-            self._pil_image = pil_img.copy()
-
-            # Reset to fit mode
-            self._is_fit_mode = True
-            self._pan_x = 0.5
-            self._pan_y = 0.5
-            self._update_display()
-
-        except Exception as e:
-            self.setText(f"Error: {e}")
-            self._dimensions = None
-            self._pil_image = None
-
-    def _update_display(self):
-        """Update the displayed image based on current zoom and pan."""
-        if not self._pil_image:
-            return
-
-        from PIL import Image as PILImage
-        from PIL.ImageQt import ImageQt
-
-        pil_img = self._pil_image
-        img_w, img_h = pil_img.width, pil_img.height
-        view_w, view_h = self.MAX_WIDTH, self.MAX_HEIGHT
-
-        if self._is_fit_mode:
-            # Fit to view
-            scale = min(view_w / img_w, view_h / img_h, 1.0)
-            self._zoom_scale = scale
-            new_w = int(img_w * scale)
-            new_h = int(img_h * scale)
-
-            if scale < 1.0:
-                resized = pil_img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
-            else:
-                resized = pil_img
-
-            qimg = ImageQt(resized)
-            pix = QPixmap.fromImage(qimg)
-            self._original_pixmap = pix
-            self.setPixmap(pix)
-            self.setCursor(Qt.ArrowCursor)
-        else:
-            # Custom zoom - crop visible region
-            scale = self._zoom_scale
-
-            # Size of view in image coordinates
-            view_img_w = view_w / scale
-            view_img_h = view_h / scale
-
-            # Calculate crop region centered on pan position
-            center_x = self._pan_x * img_w
-            center_y = self._pan_y * img_h
-
-            left = center_x - view_img_w / 2
-            top = center_y - view_img_h / 2
-
-            # Clamp to image bounds
-            left = max(0, min(left, img_w - view_img_w))
-            top = max(0, min(top, img_h - view_img_h))
-            right = min(img_w, left + view_img_w)
-            bottom = min(img_h, top + view_img_h)
-
-            # Update pan to reflect clamped position
-            if view_img_w < img_w:
-                self._pan_x = (left + view_img_w / 2) / img_w
-            if view_img_h < img_h:
-                self._pan_y = (top + view_img_h / 2) / img_h
-
-            # Crop and scale
-            cropped = pil_img.crop((int(left), int(top), int(right), int(bottom)))
-
-            # Scale to view size
-            out_w = int(cropped.width * scale)
-            out_h = int(cropped.height * scale)
-
-            if scale != 1.0:
-                resized = cropped.resize((out_w, out_h), PILImage.Resampling.LANCZOS)
-            else:
-                resized = cropped
-
-            qimg = ImageQt(resized)
-            pix = QPixmap.fromImage(qimg)
-            self.setPixmap(pix)
-
-            # Show grab cursor if image is larger than view
-            if img_w * scale > view_w or img_h * scale > view_h:
-                self.setCursor(Qt.OpenHandCursor)
-            else:
-                self.setCursor(Qt.ArrowCursor)
-
-        self.setText("")
-
-    def toggle_zoom(self):
-        """Toggle between fit-to-view and 100% zoom."""
-        if not self._pil_image:
-            return
-
-        if self._is_fit_mode:
-            # Switch to 100% zoom
-            self._is_fit_mode = False
-            self._zoom_scale = 1.0
-        else:
-            # Switch to fit mode
-            self._is_fit_mode = True
-            self._pan_x = 0.5
-            self._pan_y = 0.5
-
-        self._update_display()
-        return 0 if self._is_fit_mode else 1
-
-    def wheelEvent(self, event):
-        """Handle mouse wheel for zooming."""
-        if not self._pil_image:
-            return
-
-        delta = event.angleDelta().y()
-
-        if delta > 0:
-            # Zoom in
-            self._zoom_scale = min(self._zoom_scale * 1.25, 8.0)
-        else:
-            # Zoom out
-            self._zoom_scale = max(self._zoom_scale / 1.25, 0.1)
-
-        # Exit fit mode when zooming
-        self._is_fit_mode = False
-
-        # Check if we should return to fit mode
-        fit_scale = min(self.MAX_WIDTH / self._pil_image.width,
-                       self.MAX_HEIGHT / self._pil_image.height, 1.0)
-        if abs(self._zoom_scale - fit_scale) < 0.05:
-            self._is_fit_mode = True
-            self._zoom_scale = fit_scale
-
-        self._update_display()
-        event.accept()
-
-    def mousePressEvent(self, event):
-        """Start dragging to pan."""
-        if event.button() == Qt.LeftButton and not self._is_fit_mode:
-            self._dragging = True
-            self._drag_start_x = event.pos().x()
-            self._drag_start_y = event.pos().y()
-            self._drag_start_pan_x = self._pan_x
-            self._drag_start_pan_y = self._pan_y
-            self.setCursor(Qt.ClosedHandCursor)
-            event.accept()
-        else:
-            event.ignore()
-
-    def mouseMoveEvent(self, event):
-        """Pan the image while dragging."""
-        if self._dragging and self._pil_image:
-            dx = event.pos().x() - self._drag_start_x
-            dy = event.pos().y() - self._drag_start_y
-
-            # Convert pixel delta to image coordinates
-            img_w, img_h = self._pil_image.width, self._pil_image.height
-
-            # Pan amount in image fraction
-            pan_dx = -dx / (img_w * self._zoom_scale)
-            pan_dy = -dy / (img_h * self._zoom_scale)
-
-            self._pan_x = max(0, min(1, self._drag_start_pan_x + pan_dx))
-            self._pan_y = max(0, min(1, self._drag_start_pan_y + pan_dy))
-
-            self._update_display()
-            event.accept()
-        else:
-            event.ignore()
-
-    def mouseReleaseEvent(self, event):
-        """Stop dragging."""
-        if event.button() == Qt.LeftButton and self._dragging:
-            self._dragging = False
-            if not self._is_fit_mode:
-                self.setCursor(Qt.OpenHandCursor)
-            event.accept()
-        else:
-            event.ignore()
-
-    def mouseDoubleClickEvent(self, event):
-        """Double-click to reset to fit view."""
-        if event.button() == Qt.LeftButton:
-            self._is_fit_mode = True
-            self._pan_x = 0.5
-            self._pan_y = 0.5
-            self._update_display()
-            event.accept()
-        else:
-            event.ignore()
-
-    def get_zoom_level(self) -> int:
-        """Return current zoom level (0=fit, 1=zoomed)."""
-        return 0 if self._is_fit_mode else 1
-
-    def get_zoom_scale(self) -> float:
-        """Return current zoom scale (1.0 = 100%)."""
-        return self._zoom_scale
-
-    def get_dimensions(self):
-        """Return (width, height) of loaded image."""
-        return self._dimensions
-
-    def get_current_path(self):
-        """Return the path of the currently displayed image."""
-        return self._current_path
-
-    def clear_image(self):
-        self._clear()
+# Note: DropLineEdit, UpscaleWorker, ClipboardWorker, ThumbnailLabel
+# are now imported from .gui subpackage (see imports above)
 
 
 class MainWindow(QMainWindow):
@@ -809,11 +225,9 @@ class MainWindow(QMainWindow):
         self._bf16_check = QCheckBox("bf16")
         self._bf16_check.setChecked(True)
 
-        # Sharpening widgets
-        self._sharpen_check = QCheckBox("Sharpen")
-        self._sharpen_value_edit = QLineEdit("0.50")
-        self._sharpen_value_edit.setFixedWidth(50)
-        self._sharpen_value_edit.setEnabled(False)
+        # Sharpening button (opens dialog)
+        self._sharpen_btn = QPushButton("Sharpen: None")
+        self._sharpen_btn.setFixedWidth(140)
 
         # Labels
         self._current_file_label = QLabel("Current file: (none)")
@@ -1045,13 +459,7 @@ class MainWindow(QMainWindow):
         prec_layout.addWidget(self._bf16_check)
         options_row.addWidget(prec_box)
 
-        sharpen_box = QGroupBox("Sharpen")
-        sharpen_layout = QHBoxLayout()
-        sharpen_box.setLayout(sharpen_layout)
-        sharpen_layout.addWidget(self._sharpen_check)
-        sharpen_layout.addWidget(self._sharpen_value_edit)
-        sharpen_layout.addWidget(QLabel("(0-1)"))
-        options_row.addWidget(sharpen_box)
+        options_row.addWidget(self._sharpen_btn)
 
         options_row.addStretch()
 
@@ -1169,7 +577,7 @@ class MainWindow(QMainWindow):
         self._custom_res_button.clicked.connect(self._open_resolution_dialog)
         self._animated_output_button.clicked.connect(self._open_animated_dialog)
         self._png_options_button.clicked.connect(self._open_png_dialog)
-        self._sharpen_check.toggled.connect(self._on_sharpen_toggled)
+        self._sharpen_btn.clicked.connect(self._open_sharpen_dialog)
         self._manga_folder_check.toggled.connect(self._on_manga_folder_toggled)
         self._theme_combo.currentTextChanged.connect(self._on_theme_changed)
 
@@ -1203,9 +611,22 @@ class MainWindow(QMainWindow):
         # Crop preview button
         self._btn_crop_preview.clicked.connect(self._open_crop_preview_dialog)
 
-    def _on_sharpen_toggled(self, checked: bool):
-        """Handle sharpen checkbox toggle."""
-        self._sharpen_value_edit.setEnabled(checked)
+    def _open_sharpen_dialog(self):
+        """Open the sharpen settings dialog."""
+        dialog = SharpenDialog(self)
+        if dialog.exec():
+            self._update_sharpen_button_text()
+
+    def _update_sharpen_button_text(self):
+        """Update sharpen button text based on current config."""
+        cfg = get_config()
+        method = getattr(cfg, 'sharpen_method', 'none')
+        if method == 'cas':
+            self._sharpen_btn.setText(f"Sharpen: CAS {cfg.sharpen_value:.2f}")
+        elif method == 'adaptive':
+            self._sharpen_btn.setText(f"Sharpen: Adaptive {cfg.sharpen_value:.2f}")
+        else:
+            self._sharpen_btn.setText("Sharpen: None")
 
     def _on_manga_folder_toggled(self, checked: bool):
         """Handle manga folder checkbox toggle - disables same_dir when enabled."""
@@ -1495,6 +916,10 @@ class MainWindow(QMainWindow):
 
         self._tile_w_spin.setValue(cfg.tile_width)
         self._tile_h_spin.setValue(cfg.tile_height)
+        # Update spinbox step based on disable_tile_limit setting
+        step = 1 if cfg.disable_tile_limit else 64
+        self._tile_w_spin.setSingleStep(step)
+        self._tile_h_spin.setSingleStep(step)
         self._upscale_check.setChecked(cfg.upscale_enabled)
         self._fp16_check.setChecked(cfg.use_fp16)
         self._bf16_check.setChecked(cfg.use_bf16)
@@ -1511,10 +936,8 @@ class MainWindow(QMainWindow):
         self._overwrite_check.setChecked(cfg.overwrite_existing)
         self._append_model_suffix_check.setChecked(cfg.append_model_suffix)
 
-        # Sharpening
-        self._sharpen_check.setChecked(cfg.sharpen_enabled)
-        self._sharpen_value_edit.setText(f"{cfg.sharpen_value:.2f}")
-        self._sharpen_value_edit.setEnabled(cfg.sharpen_enabled)
+        # Sharpening button text
+        self._update_sharpen_button_text()
 
         # Theme
         theme_name = cfg.theme.capitalize() if cfg.theme else DEFAULT_THEME
@@ -1550,12 +973,7 @@ class MainWindow(QMainWindow):
         cfg.overwrite_existing = self._overwrite_check.isChecked()
         cfg.append_model_suffix = self._append_model_suffix_check.isChecked()
 
-        # Sharpening
-        cfg.sharpen_enabled = self._sharpen_check.isChecked()
-        try:
-            cfg.sharpen_value = float(self._sharpen_value_edit.text())
-        except ValueError:
-            pass
+        # Sharpening is saved via SharpenDialog
 
         # Theme
         cfg.theme = self._theme_combo.currentText().lower()
@@ -1876,6 +1294,19 @@ class MainWindow(QMainWindow):
         if self._upscale_check.isChecked() and (not onnx_path or not os.path.exists(onnx_path)):
             QMessageBox.warning(self, "No Model", "Please select a valid ONNX model.")
             return
+
+        # Validate tile size (must be multiple of 64 unless disabled)
+        if self._upscale_check.isChecked() and not self.config.disable_tile_limit:
+            tile_w = self._tile_w_spin.value()
+            tile_h = self._tile_h_spin.value()
+            if tile_w % 64 != 0 or tile_h % 64 != 0:
+                QMessageBox.warning(
+                    self, "Invalid Tile Size",
+                    f"Tile dimensions must be multiples of 64.\n\n"
+                    f"Current: {tile_w}x{tile_h}\n\n"
+                    f"To use non-standard tile sizes, enable 'Disable tile alignment limit' in Settings."
+                )
+                return
 
         # Update config from UI
         self._save_settings()

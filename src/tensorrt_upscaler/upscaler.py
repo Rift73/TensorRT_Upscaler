@@ -116,6 +116,7 @@ class ImageUpscaler:
         bf16: bool = True,
         tf32: bool = False,
         backend: str = "tensorrt",
+        disable_tile_limit: bool = False,
     ):
         """
         Initialize upscaler with TensorRT or DirectML engine.
@@ -128,14 +129,17 @@ class ImageUpscaler:
             bf16: Enable BF16 precision (default, TensorRT only)
             tf32: Enable TF32 precision (TensorRT only)
             backend: "tensorrt" or "directml"
+            disable_tile_limit: When True, skip tile alignment to 64 and padding
         """
         self.tile_w, self.tile_h = tile_size
         self.overlap = overlap
         self.backend = backend
+        self.disable_tile_limit = disable_tile_limit
 
-        # Align tile size to 64
-        self.tile_w = (self.tile_w // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
-        self.tile_h = (self.tile_h // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
+        # Align tile size to 64 (unless disabled)
+        if not disable_tile_limit:
+            self.tile_w = (self.tile_w // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
+            self.tile_h = (self.tile_h // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
 
         if backend == "directml":
             if not is_directml_available():
@@ -448,7 +452,10 @@ class ImageUpscaler:
         return tile
 
     def _pad_to_alignment(self, arr: np.ndarray) -> np.ndarray:
-        """Pad array to be multiple of TILE_ALIGNMENT."""
+        """Pad array to be multiple of TILE_ALIGNMENT (skip if disable_tile_limit)."""
+        if self.disable_tile_limit:
+            return arr
+
         h, w = arr.shape[:2]
         new_h = ((h + self.TILE_ALIGNMENT - 1) // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
         new_w = ((w + self.TILE_ALIGNMENT - 1) // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
@@ -510,6 +517,7 @@ def upscale_file(
     bf16: bool = True,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     backend: str = "tensorrt",
+    disable_tile_limit: bool = False,
 ) -> bool:
     """
     Convenience function to upscale an image file.
@@ -525,6 +533,7 @@ def upscale_file(
         bf16: Use BF16 precision
         progress_callback: Progress callback
         backend: "tensorrt" or "directml"
+        disable_tile_limit: Skip tile alignment and padding
 
     Returns:
         True if successful
@@ -537,6 +546,7 @@ def upscale_file(
             fp16=fp16,
             bf16=bf16,
             backend=backend,
+            disable_tile_limit=disable_tile_limit,
         )
 
         # Use fast I/O
