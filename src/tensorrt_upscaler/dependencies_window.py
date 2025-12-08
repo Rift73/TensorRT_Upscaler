@@ -250,8 +250,11 @@ class InstallWorker(QThread):
                         self.finished_signal.emit(False, "Installation cancelled.")
                         return
                     current_step += 1
+                    dest_path = TOOLS_DIR / path_subdir if path_subdir else TOOLS_DIR
                     self.status_signal.emit(f"Downloading {name}...", current_step, total_steps)
                     self.progress_signal.emit(f"Downloading {name}...")
+                    self.progress_signal.emit(f"  URL: {url}")
+                    self.progress_signal.emit(f"  Destination: {dest_path}")
                     success = self._download_and_extract_tool(name, url, extract_type)
                     if success:
                         self.progress_signal.emit(f"  {name} installed successfully")
