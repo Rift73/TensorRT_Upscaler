@@ -96,6 +96,44 @@ APPDATA = Path(os.environ.get("APPDATA", ""))
 TOOLS_DIR = APPDATA / "tensorrt-upscaler-GUI"
 
 
+def _is_package_installed(package: str) -> bool:
+    """Check if a Python package is already installed."""
+    # Extract package name without version specifier
+    pkg_name = package.split(">=")[0].split("==")[0].split("<")[0].strip()
+    # Handle package names with hyphens vs underscores (pip normalizes them)
+    pkg_name_normalized = pkg_name.replace("-", "_").lower()
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "show", pkg_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _is_tool_installed(tool_name: str) -> bool:
+    """Check if an external tool is available in PATH or TOOLS_DIR."""
+    # Check if tool exists in PATH
+    if shutil.which(tool_name):
+        return True
+    if shutil.which(f"{tool_name}.exe"):
+        return True
+
+    # Check in TOOLS_DIR and subdirectories
+    if TOOLS_DIR.exists():
+        for exe in TOOLS_DIR.rglob(f"{tool_name}.exe"):
+            return True
+        for exe in TOOLS_DIR.rglob(tool_name):
+            if exe.is_file():
+                return True
+
+    return False
+
+
 class InstallWorker(QThread):
     """Worker thread for installing dependencies."""
 
@@ -122,20 +160,54 @@ class InstallWorker(QThread):
     def run(self) -> None:
         """Run the installation process."""
         try:
-            total_steps = 0
-            if self._install_pip:
-                total_steps += len(PIP_PACKAGES)
-            if self._install_tensorrt:
-                total_steps += len(CUDA_PACKAGES)
-            if self._install_tools:
-                total_steps += len(EXTERNAL_TOOLS)
+            # First, check what's already installed
+            self.progress_signal.emit("Checking installed packages...\n")
 
+            pip_to_install = []
+            cuda_to_install = []
+            tools_to_install = []
+
+            if self._install_pip:
+                for pkg in PIP_PACKAGES:
+                    pkg_name = pkg.split(">=")[0].split("==")[0]
+                    if _is_package_installed(pkg):
+                        self.progress_signal.emit(f"  {pkg_name}: already installed")
+                    else:
+                        pip_to_install.append(pkg)
+                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
+
+            if self._install_tensorrt:
+                for pkg in CUDA_PACKAGES:
+                    pkg_name = pkg.split(">=")[0].split("==")[0]
+                    if _is_package_installed(pkg):
+                        self.progress_signal.emit(f"  {pkg_name}: already installed")
+                    else:
+                        cuda_to_install.append(pkg)
+                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
+
+            if self._install_tools:
+                for name, url, extract_type, path_subdir in EXTERNAL_TOOLS:
+                    if _is_tool_installed(name):
+                        self.progress_signal.emit(f"  {name}: already installed")
+                    else:
+                        tools_to_install.append((name, url, extract_type, path_subdir))
+                        self.progress_signal.emit(f"  {name}: needs installation")
+
+            # Calculate total steps (only packages that need installation)
+            total_steps = len(pip_to_install) + len(cuda_to_install) + len(tools_to_install)
+
+            if total_steps == 0:
+                self.progress_signal.emit("\n=== All dependencies already installed! ===\n")
+                self.finished_signal.emit(True, "All dependencies already installed!")
+                return
+
+            self.progress_signal.emit(f"\n{total_steps} package(s) to install...\n")
             current_step = 0
 
             # Install pip packages
-            if self._install_pip:
+            if pip_to_install:
                 self.progress_signal.emit("\n=== Installing Python packages ===\n")
-                for pkg in PIP_PACKAGES:
+                for pkg in pip_to_install:
                     if self._cancelled:
                         self.finished_signal.emit(False, "Installation cancelled.")
                         return
@@ -149,10 +221,10 @@ class InstallWorker(QThread):
                         self.progress_signal.emit(f"Warning: Failed to install {pkg}")
 
             # Install CUDA/TensorRT packages
-            if self._install_tensorrt:
+            if cuda_to_install:
                 self.progress_signal.emit("\n=== Installing CUDA/TensorRT packages ===\n")
                 self.progress_signal.emit("Note: TensorRT requires NVIDIA GPU and CUDA toolkit installed.\n")
-                for pkg in CUDA_PACKAGES:
+                for pkg in cuda_to_install:
                     if self._cancelled:
                         self.finished_signal.emit(False, "Installation cancelled.")
                         return
@@ -167,13 +239,13 @@ class InstallWorker(QThread):
                         self.progress_signal.emit("  You may need to install TensorRT manually from NVIDIA.")
 
             # Install external tools
-            if self._install_tools:
+            if tools_to_install:
                 self.progress_signal.emit("\n=== Installing external tools ===\n")
                 TOOLS_DIR.mkdir(parents=True, exist_ok=True)
 
                 paths_to_add: list[Path] = []
 
-                for name, url, extract_type, path_subdir in EXTERNAL_TOOLS:
+                for name, url, extract_type, path_subdir in tools_to_install:
                     if self._cancelled:
                         self.finished_signal.emit(False, "Installation cancelled.")
                         return
@@ -192,16 +264,17 @@ class InstallWorker(QThread):
                         self.progress_signal.emit(f"  Warning: Failed to install {name}")
 
                 # Add all tool directories to PATH
-                self.progress_signal.emit("\nAdding tools directories to PATH...")
-                for path_dir in paths_to_add:
-                    if path_dir.exists():
-                        success = self._add_to_path(path_dir)
-                        if success:
-                            self.progress_signal.emit(f"  Added {path_dir} to user PATH")
+                if paths_to_add:
+                    self.progress_signal.emit("\nAdding tools directories to PATH...")
+                    for path_dir in paths_to_add:
+                        if path_dir.exists():
+                            success = self._add_to_path(path_dir)
+                            if success:
+                                self.progress_signal.emit(f"  Added {path_dir} to user PATH")
+                            else:
+                                self.progress_signal.emit(f"  Warning: Could not add {path_dir} to PATH")
                         else:
-                            self.progress_signal.emit(f"  Warning: Could not add {path_dir} to PATH")
-                    else:
-                        self.progress_signal.emit(f"  Warning: Path does not exist: {path_dir}")
+                            self.progress_signal.emit(f"  Warning: Path does not exist: {path_dir}")
 
             self.progress_signal.emit("\n=== Installation complete ===\n")
             self.finished_signal.emit(True, "All dependencies installed successfully!")
