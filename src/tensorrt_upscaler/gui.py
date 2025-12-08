@@ -587,35 +587,31 @@ class ThumbnailLabel(QLabel):
         return 0 if self._is_fit_mode else 1
 
     def wheelEvent(self, event):
-        """Handle mouse wheel for zooming (Ctrl+Scroll)."""
+        """Handle mouse wheel for zooming."""
         if not self._pil_image:
             return
 
-        # Check for Ctrl modifier
-        if event.modifiers() & Qt.ControlModifier:
-            delta = event.angleDelta().y()
+        delta = event.angleDelta().y()
 
-            if delta > 0:
-                # Zoom in
-                self._zoom_scale = min(self._zoom_scale * 1.25, 8.0)
-            else:
-                # Zoom out
-                self._zoom_scale = max(self._zoom_scale / 1.25, 0.1)
-
-            # Exit fit mode when zooming
-            self._is_fit_mode = False
-
-            # Check if we should return to fit mode
-            fit_scale = min(self.MAX_WIDTH / self._pil_image.width,
-                           self.MAX_HEIGHT / self._pil_image.height, 1.0)
-            if abs(self._zoom_scale - fit_scale) < 0.05:
-                self._is_fit_mode = True
-                self._zoom_scale = fit_scale
-
-            self._update_display()
-            event.accept()
+        if delta > 0:
+            # Zoom in
+            self._zoom_scale = min(self._zoom_scale * 1.25, 8.0)
         else:
-            event.ignore()
+            # Zoom out
+            self._zoom_scale = max(self._zoom_scale / 1.25, 0.1)
+
+        # Exit fit mode when zooming
+        self._is_fit_mode = False
+
+        # Check if we should return to fit mode
+        fit_scale = min(self.MAX_WIDTH / self._pil_image.width,
+                       self.MAX_HEIGHT / self._pil_image.height, 1.0)
+        if abs(self._zoom_scale - fit_scale) < 0.05:
+            self._is_fit_mode = True
+            self._zoom_scale = fit_scale
+
+        self._update_display()
+        event.accept()
 
     def mousePressEvent(self, event):
         """Start dragging to pan."""
