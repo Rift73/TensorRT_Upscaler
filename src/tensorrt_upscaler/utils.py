@@ -287,7 +287,7 @@ def run_pingo(input_path: str) -> bool:
     Feature #49
     """
     try:
-        cmd = ["pingo", "-s4", input_path]
+        cmd = ["pingo", "-lossless", "-s4", input_path]
         result = subprocess.run(cmd, capture_output=True, timeout=120)
         return result.returncode == 0
 
