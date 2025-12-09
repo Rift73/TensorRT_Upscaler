@@ -149,6 +149,7 @@ class PyTorchEngine:
         self.cudnn_benchmark = cudnn_benchmark and device != "cpu"
         self.torch_compile = torch_compile and device != "cpu"
         self._compiled_model = None  # Will hold compiled model if torch_compile is enabled
+        self._needs_warmup = False  # Whether warmup is needed for compiled model
 
         # Check BF16 support
         if self.bf16:
@@ -238,23 +239,85 @@ class PyTorchEngine:
                 self.torch_compile = False
                 return
 
-            print(f"[PyTorch] Compiling model with torch.compile (this may take a moment)...")
+            print(f"[PyTorch] Applying torch.compile (JIT compilation on first inference)...")
 
             # Use reduce-overhead mode which enables CUDA graphs for lower latency
-            # This is best for repetitive inference with same input shapes (tiled upscaling)
+            # - dynamic=False: We use fixed tile sizes, so specialize for static shapes
+            # - fullgraph=False: Allow graph breaks for model compatibility
+            # - mode="reduce-overhead": Enables CUDA graphs for reduced kernel launch overhead
+            #
+            # Note: CUDA graphs require static input shapes. If tile size changes,
+            # the model will recompile for that shape (cached for future use).
             self._compiled_model = torch.compile(
                 self.model,
                 mode="reduce-overhead",  # Uses CUDA graphs
                 fullgraph=False,  # Allow graph breaks for compatibility
+                dynamic=False,  # Static shapes for maximum optimization
             )
 
-            print(f"[PyTorch] Model compiled (first inference will trigger JIT compilation)")
+            # Mark that we need warmup (actual compilation happens on first forward pass)
+            self._needs_warmup = True
+
+            print(f"[PyTorch] torch.compile applied (first inference will be slow due to JIT compilation)")
 
         except Exception as e:
             print(f"[PyTorch] Warning: torch.compile failed: {e}")
             print(f"[PyTorch] Falling back to eager mode")
             self.torch_compile = False
             self._compiled_model = None
+            self._needs_warmup = False
+
+    def warmup_compiled_model(self, tile_height: int, tile_width: int, channels: int = 3):
+        """
+        Warmup the compiled model by running inference on a dummy input.
+
+        This triggers JIT compilation for the given input shape. Call this
+        before processing to avoid slow first inference during actual work.
+
+        Args:
+            tile_height: Height of tiles that will be processed
+            tile_width: Width of tiles that will be processed
+            channels: Number of input channels (default 3 for RGB)
+        """
+        if not self.torch_compile or self._compiled_model is None:
+            return
+
+        if not self._needs_warmup:
+            return
+
+        print(f"[PyTorch] Warming up compiled model for shape ({tile_height}, {tile_width})...")
+
+        try:
+            # Create dummy input matching expected tile shape
+            dummy_input = torch.zeros(
+                1, channels, tile_height, tile_width,
+                dtype=torch.float32,
+                device=self.device
+            )
+
+            # Apply channels_last if enabled
+            if self.channels_last:
+                dummy_input = dummy_input.to(memory_format=torch.channels_last)
+
+            # Run warmup inference (this triggers actual compilation)
+            with torch.inference_mode():
+                if self.half or self.bf16:
+                    autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
+                    with torch.amp.autocast('cuda', dtype=autocast_dtype):
+                        _ = self._compiled_model(dummy_input)
+                else:
+                    _ = self._compiled_model(dummy_input)
+
+            # Sync to ensure compilation is complete
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            self._needs_warmup = False
+            print(f"[PyTorch] Warmup complete - model compiled for shape ({tile_height}, {tile_width})")
+
+        except Exception as e:
+            print(f"[PyTorch] Warning: Warmup failed: {e}")
+            print(f"[PyTorch] First inference will trigger compilation instead")
 
     def _load_model(self):
         """Load model using spandrel."""

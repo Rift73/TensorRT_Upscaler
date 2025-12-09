@@ -82,10 +82,13 @@ class PyTorchOptionsDialog(QDialog):
 
         self._torch_compile_check = QCheckBox("torch.compile")
         self._torch_compile_check.setToolTip(
-            "JIT compile the model for optimized inference.\n"
-            "Significantly slower first run (compilation), ~20-40% faster subsequent runs.\n"
-            "Uses CUDA Graphs to reduce CPU overhead.\n"
-            "Best for: batch processing many images with same tile size."
+            "JIT compile the model for optimized inference (PyTorch 2.0+).\n\n"
+            "• First batch: ~30-60s extra for JIT compilation (warmup)\n"
+            "• Subsequent images: ~20-40% faster inference\n"
+            "• Uses CUDA Graphs to reduce kernel launch overhead\n"
+            "• Requires static tile sizes (recompiles if size changes)\n\n"
+            "Best for: batch processing many images with consistent tile size.\n"
+            "Not recommended for: single images or frequently changing tile sizes."
         )
 
         optim_layout.addWidget(self._channels_last_check, 0, 0)

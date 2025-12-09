@@ -262,6 +262,14 @@ class ImageUpscaler:
         """Upscale RGB numpy array with tiling and double-buffered async."""
         height, width = img.shape[:2]
 
+        # Warmup compiled model if using PyTorch with torch.compile
+        # This triggers JIT compilation for the tile shape before actual processing
+        if hasattr(self.engine, 'warmup_compiled_model'):
+            # Use actual tile size or image size if smaller
+            warmup_h = min(height, self.tile_h)
+            warmup_w = min(width, self.tile_w)
+            self.engine.warmup_compiled_model(warmup_h, warmup_w, channels=3)
+
         # Check if tiling is needed
         if width <= self.tile_w and height <= self.tile_h:
             arr = self._prepare_tile(img)
