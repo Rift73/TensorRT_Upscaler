@@ -307,18 +307,37 @@ class PyTorchEngine:
             # JIT trace requires the model to be in eval mode
             self.model.eval()
 
+            # Some models (like HAT) have tensor constants that change between invocations
+            # (e.g., self.mean = self.mean.type_as(x)). We need to pre-convert these
+            # to avoid tracing errors.
+            self._prepare_model_for_trace(dummy_input)
+
             # Trace the model with the dummy input
-            # We use torch.no_grad() since we're doing inference
+            # - check_trace=False: Skip verification that can fail with models that have
+            #   tensor constants modified during forward (like HAT's self.mean)
+            # - strict=False: Allow tracing to succeed even with some dynamic behavior
             with torch.no_grad():
                 if self.half or self.bf16:
                     autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
                     with torch.amp.autocast('cuda', dtype=autocast_dtype):
-                        self._compiled_model = torch.jit.trace(self.model, dummy_input)
+                        self._compiled_model = torch.jit.trace(
+                            self.model, dummy_input,
+                            check_trace=False,
+                            strict=False
+                        )
                 else:
-                    self._compiled_model = torch.jit.trace(self.model, dummy_input)
+                    self._compiled_model = torch.jit.trace(
+                        self.model, dummy_input,
+                        check_trace=False,
+                        strict=False
+                    )
 
             # Optimize the traced model for inference
-            self._compiled_model = torch.jit.optimize_for_inference(self._compiled_model)
+            try:
+                self._compiled_model = torch.jit.optimize_for_inference(self._compiled_model)
+            except Exception:
+                # optimize_for_inference may fail on some models, continue without it
+                pass
 
             # Sync to ensure tracing is complete
             if torch.cuda.is_available():
@@ -333,6 +352,29 @@ class PyTorchEngine:
             self.torch_compile = "off"
             self._compiled_model = None
             self._needs_warmup = False
+
+    def _prepare_model_for_trace(self, sample_input: "torch.Tensor"):
+        """
+        Prepare model for JIT tracing by pre-converting dynamic tensors.
+
+        Some models (like HAT) have tensor constants that get converted during
+        forward pass (e.g., self.mean = self.mean.type_as(x)). This causes
+        tracing to fail because the tensor values differ between invocations.
+
+        This method runs a forward pass to ensure all such conversions happen
+        before tracing begins.
+        """
+        try:
+            with torch.no_grad():
+                if self.half or self.bf16:
+                    autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
+                    with torch.amp.autocast('cuda', dtype=autocast_dtype):
+                        _ = self.model(sample_input)
+                else:
+                    _ = self.model(sample_input)
+        except Exception:
+            # If pre-conversion fails, tracing might still work
+            pass
 
     def warmup_compiled_model(self, tile_height: int, tile_width: int, channels: int = 3):
         """
