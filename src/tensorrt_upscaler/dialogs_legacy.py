@@ -10,6 +10,7 @@ import json
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
@@ -744,6 +745,72 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(presets_tab, "Presets")
 
+        # Tab 3: Web Extraction
+        web_tab = QWidget()
+        web_layout = QVBoxLayout(web_tab)
+
+        web_info = QLabel(
+            "Extract images from web pages by pasting a URL. Uses Playwright for "
+            "JavaScript rendering and can use browser cookies for authenticated pages."
+        )
+        web_info.setWordWrap(True)
+        web_info.setStyleSheet("color: #888; font-style: italic;")
+        web_layout.addWidget(web_info)
+
+        # Browser cookie source
+        cookie_group = QGroupBox("Browser Cookies")
+        cookie_layout = QFormLayout(cookie_group)
+
+        self.web_browser_combo = QComboBox()
+        self.web_browser_combo.addItems([
+            "None (no cookies)",
+            "Chrome",
+            "Firefox",
+            "Edge",
+            "Chromium",
+            "Brave"
+        ])
+        self.web_browser_combo.setToolTip(
+            "Select browser to copy cookies from for authenticated pages.\n"
+            "The browser must be closed when extracting cookies."
+        )
+        cookie_layout.addRow("Cookie source:", self.web_browser_combo)
+        web_layout.addWidget(cookie_group)
+
+        # Wait time
+        timing_group = QGroupBox("Page Loading")
+        timing_layout = QFormLayout(timing_group)
+
+        self.web_wait_spin = QDoubleSpinBox()
+        self.web_wait_spin.setRange(0.5, 30.0)
+        self.web_wait_spin.setSingleStep(0.5)
+        self.web_wait_spin.setDecimals(1)
+        self.web_wait_spin.setSuffix(" seconds")
+        self.web_wait_spin.setToolTip(
+            "Time to wait for JavaScript to load images.\n"
+            "Increase this for slow-loading pages."
+        )
+        timing_layout.addRow("Wait time:", self.web_wait_spin)
+        web_layout.addWidget(timing_group)
+
+        # Install button
+        install_group = QGroupBox("Dependencies")
+        install_layout = QVBoxLayout(install_group)
+        install_info = QLabel(
+            "Web extraction requires Playwright browser automation.\n"
+            "Click below to install if not already installed."
+        )
+        install_info.setWordWrap(True)
+        install_layout.addWidget(install_info)
+
+        self.btn_install_playwright = QPushButton("Install Playwright")
+        self.btn_install_playwright.clicked.connect(self._install_playwright)
+        install_layout.addWidget(self.btn_install_playwright)
+        web_layout.addWidget(install_group)
+
+        web_layout.addStretch()
+        tabs.addTab(web_tab, "Web Extract")
+
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -787,6 +854,11 @@ class SettingsDialog(QDialog):
 
         # Presets
         self._refresh_presets_list()
+
+        # Web extraction
+        browser_map = {"none": 0, "chrome": 1, "firefox": 2, "edge": 3, "chromium": 4, "brave": 5}
+        self.web_browser_combo.setCurrentIndex(browser_map.get(cfg.web_extract_browser, 0))
+        self.web_wait_spin.setValue(cfg.web_extract_wait_time)
 
     def _refresh_presets_list(self):
         """Refresh the presets list from config."""
@@ -922,8 +994,53 @@ class SettingsDialog(QDialog):
         cfg.aspect_filter_min_ratio = self.aspect_min.value()
         cfg.aspect_filter_max_ratio = self.aspect_max.value()
 
+        # Web extraction
+        browser_map = {0: "none", 1: "chrome", 2: "firefox", 3: "edge", 4: "chromium", 5: "brave"}
+        cfg.web_extract_browser = browser_map.get(self.web_browser_combo.currentIndex(), "none")
+        cfg.web_extract_wait_time = self.web_wait_spin.value()
+
         save_config()
         self.accept()
+
+    def _install_playwright(self):
+        """Install Playwright and browser."""
+        import subprocess
+        import sys
+
+        reply = QMessageBox.question(
+            self,
+            "Install Playwright",
+            "This will install Playwright and download Chromium browser (~150MB).\n\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self.btn_install_playwright.setEnabled(False)
+            self.btn_install_playwright.setText("Installing...")
+            QApplication.processEvents()
+
+            # Install playwright package
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "playwright", "browser_cookie3"],
+                check=True
+            )
+
+            # Install chromium browser
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True
+            )
+
+            QMessageBox.information(self, "Success", "Playwright installed successfully!")
+            self.btn_install_playwright.setText("Installed ✓")
+
+        except subprocess.CalledProcessError as e:
+            QMessageBox.warning(self, "Error", f"Failed to install Playwright:\n{e}")
+            self.btn_install_playwright.setEnabled(True)
+            self.btn_install_playwright.setText("Install Playwright")
 
 
 class NotificationsDialog(QDialog):

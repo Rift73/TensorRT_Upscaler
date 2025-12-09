@@ -76,6 +76,7 @@ from .gui import UpscaleWorker, ClipboardWorker, DropLineEdit, ThumbnailLabel
 from .dialogs import (
     CustomResolutionDialog,
     PyTorchOptionsDialog,
+    WebImageDialog,
     AnimatedOutputDialog,
     PngOptionsDialog,
     SettingsDialog,
@@ -983,6 +984,10 @@ class MainWindow(QMainWindow):
             else:
                 s = u.toString()
                 if s.lower().startswith(("http://", "https://")):
+                    # Check if it's a webpage URL (not direct image)
+                    if self._try_web_extract(s):
+                        return
+                    # Fall back to direct download
                     path = download_url(s)
                     if path:
                         self._set_inputs_from_paths([Path(path)])
@@ -991,9 +996,48 @@ class MainWindow(QMainWindow):
         # Plain text URL
         text = md.text().strip() if md.hasText() else ""
         if text.lower().startswith(("http://", "https://")):
+            # Check if it's a webpage URL (not direct image)
+            if self._try_web_extract(text):
+                return
+            # Fall back to direct download
             path = download_url(text)
             if path:
                 self._set_inputs_from_paths([Path(path)])
+
+    def _try_web_extract(self, url: str) -> bool:
+        """
+        Try to extract images from a webpage URL.
+
+        Returns True if handled (dialog opened), False if should try direct download.
+        """
+        from .web_extractor import is_webpage_url
+
+        if not is_webpage_url(url):
+            return False
+
+        # Show confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Extract Images from Page?",
+            f"This appears to be a webpage URL:\n{url}\n\n"
+            "Would you like to extract images from this page?\n\n"
+            "Click 'No' to try downloading as a direct image.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+        )
+
+        if reply == QMessageBox.Cancel:
+            return True  # Handled (cancelled)
+        elif reply == QMessageBox.No:
+            return False  # Let caller try direct download
+
+        # Open web image extraction dialog
+        dialog = WebImageDialog(url, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            paths = dialog.get_selected_paths()
+            if paths:
+                self._set_inputs_from_paths([Path(p) for p in paths])
+
+        return True  # Handled
 
     def _load_settings(self):
         """Load settings from config."""
@@ -1265,6 +1309,7 @@ class MainWindow(QMainWindow):
         """Handle drop - files, folders, URLs, or image data."""
         mime = event.mimeData()
         paths_to_add: List[Path] = []
+        webpage_url: Optional[str] = None
 
         if mime.hasUrls():
             for url in mime.urls():
@@ -1273,10 +1318,18 @@ class MainWindow(QMainWindow):
                 else:
                     # Remote URL - download (skip blob: URLs)
                     url_str = url.toString()
-                    if not url_str.startswith('blob:'):
-                        path = download_url(url_str)
-                        if path:
-                            paths_to_add.append(Path(path))
+                    if url_str.startswith('blob:'):
+                        continue
+
+                    # Check if it's a webpage URL
+                    from .web_extractor import is_webpage_url
+                    if is_webpage_url(url_str):
+                        webpage_url = url_str
+                        continue
+
+                    path = download_url(url_str)
+                    if path:
+                        paths_to_add.append(Path(path))
 
         # If no paths from URLs, try image data directly (e.g., from browser drag)
         if not paths_to_add and mime.hasImage():
@@ -1294,12 +1347,20 @@ class MainWindow(QMainWindow):
             text = mime.text().strip()
             url = extract_url_from_text(text)
             if url and not url.startswith('blob:'):
-                path = download_url(url)
-                if path:
-                    paths_to_add.append(Path(path))
+                # Check if it's a webpage URL
+                from .web_extractor import is_webpage_url
+                if is_webpage_url(url):
+                    webpage_url = url
+                else:
+                    path = download_url(url)
+                    if path:
+                        paths_to_add.append(Path(path))
 
         if paths_to_add:
             self._set_inputs_from_paths(paths_to_add)
+        elif webpage_url:
+            # Offer to extract images from webpage
+            self._try_web_extract(webpage_url)
         else:
             # Show message if nothing could be imported
             if mime.hasUrls():

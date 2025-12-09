@@ -168,6 +168,10 @@ class Config:
     comparison_model_a: str = ""
     comparison_model_b: str = ""
 
+    # Web image extraction settings
+    web_extract_browser: str = "none"  # none, chrome, firefox, edge, chromium, brave
+    web_extract_wait_time: float = 3.0  # Seconds to wait for JS to load
+
     def save(self) -> None:
         """Save configuration to Windows Registry."""
         if sys.platform != "win32":

@@ -15,6 +15,9 @@ from .resolution import CustomResolutionDialog
 # Re-export from pytorch_options.py
 from .pytorch_options import PyTorchOptionsDialog
 
+# Re-export from web_image_dialog.py
+from .web_image_dialog import WebImageDialog
+
 # Re-export remaining dialogs from legacy module
 # These can be moved to separate files as needed
 from ..dialogs_legacy import (
@@ -32,6 +35,7 @@ from ..dialogs_legacy import (
 __all__ = [
     "CustomResolutionDialog",
     "PyTorchOptionsDialog",
+    "WebImageDialog",
     "AnimatedOutputDialog",
     "PngOptionsDialog",
     "SettingsDialog",

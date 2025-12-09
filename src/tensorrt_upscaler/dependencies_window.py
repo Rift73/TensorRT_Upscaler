@@ -75,6 +75,12 @@ PYTORCH_OPTIONAL_PACKAGES = [
     "ramtorch",
 ]
 
+# Web extraction packages (for extracting images from web pages)
+WEB_EXTRACT_PACKAGES = [
+    "playwright>=1.40.0",
+    "browser_cookie3>=0.19.0",
+]
+
 # External tools to download
 # Format: (name, url, extract_type, path_subdir)
 # path_subdir: subdirectory within TOOLS_DIR to add to PATH
