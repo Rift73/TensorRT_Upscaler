@@ -188,6 +188,11 @@ def download_url(url: str, dest_dir: Optional[str] = None) -> Optional[str]:
     Features #54-55
     """
     try:
+        # Skip blob: URLs - these are browser-internal and can't be downloaded
+        if url.startswith('blob:'):
+            print(f"Cannot download blob: URL (browser-internal): {url}")
+            return None
+
         # Parse URL
         parsed = urlparse(url)
 

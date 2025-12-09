@@ -1262,7 +1262,7 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
-        """Handle drop - files, folders, URLs."""
+        """Handle drop - files, folders, URLs, or image data."""
         mime = event.mimeData()
         paths_to_add: List[Path] = []
 
@@ -1271,22 +1271,46 @@ class MainWindow(QMainWindow):
                 if url.isLocalFile():
                     paths_to_add.append(Path(url.toLocalFile()))
                 else:
-                    # Remote URL - download
+                    # Remote URL - download (skip blob: URLs)
                     url_str = url.toString()
-                    path = download_url(url_str)
-                    if path:
-                        paths_to_add.append(Path(path))
+                    if not url_str.startswith('blob:'):
+                        path = download_url(url_str)
+                        if path:
+                            paths_to_add.append(Path(path))
 
-        elif mime.hasText():
+        # If no paths from URLs, try image data directly (e.g., from browser drag)
+        if not paths_to_add and mime.hasImage():
+            image = mime.imageData()
+            if image and not image.isNull():
+                # Save QImage to temp file
+                import tempfile
+                fd, temp_path = tempfile.mkstemp(suffix='.png')
+                os.close(fd)
+                if image.save(temp_path, 'PNG'):
+                    paths_to_add.append(Path(temp_path))
+
+        # Try text URLs as fallback
+        if not paths_to_add and mime.hasText():
             text = mime.text().strip()
             url = extract_url_from_text(text)
-            if url:
+            if url and not url.startswith('blob:'):
                 path = download_url(url)
                 if path:
                     paths_to_add.append(Path(path))
 
         if paths_to_add:
             self._set_inputs_from_paths(paths_to_add)
+        else:
+            # Show message if nothing could be imported
+            if mime.hasUrls():
+                url_str = mime.urls()[0].toString() if mime.urls() else ""
+                if url_str.startswith('blob:'):
+                    QMessageBox.warning(
+                        self, "Cannot Import",
+                        "Cannot import blob: URLs from browser.\n\n"
+                        "Please save the image to disk first, or copy the image "
+                        "(not the link) and paste it."
+                    )
 
     def _copy_to_clipboard(self):
         """Upscale first image and copy result to clipboard."""
