@@ -52,8 +52,8 @@ class WebImageExtractor:
     """
 
     # Minimum image dimensions to extract (filters out icons/buttons)
-    MIN_WIDTH = 100
-    MIN_HEIGHT = 100
+    MIN_WIDTH = 400
+    MIN_HEIGHT = 600
 
     def __init__(
         self,
@@ -135,12 +135,17 @@ class WebImageExtractor:
         Returns:
             List of ExtractedImage objects
         """
-        images = []
-
         def log(msg: str):
             if progress_callback:
                 progress_callback(msg)
             print(msg)
+
+        # Check for special site handlers
+        if "mangadex.org/chapter/" in url:
+            log("Detected MangaDex chapter - using API")
+            return self._extract_mangadex(url, log)
+
+        images = []
 
         log(f"Opening page: {url}")
 
@@ -414,6 +419,75 @@ class WebImageExtractor:
             pass
 
         return None
+
+    def _extract_mangadex(
+        self,
+        url: str,
+        log: Callable[[str], None],
+    ) -> List[ExtractedImage]:
+        """
+        Extract images from MangaDex using their public API.
+
+        MangaDex doesn't show images in the HTML - they use a JS-based reader
+        that fetches images via API. We use their at-home API directly.
+        """
+        import urllib.request
+        import json
+        import re
+
+        images = []
+
+        # Extract chapter ID from URL
+        # Format: https://mangadex.org/chapter/{uuid}
+        match = re.search(r"/chapter/([a-f0-9-]+)", url)
+        if not match:
+            log("Could not extract chapter ID from URL")
+            return images
+
+        chapter_id = match.group(1)
+        log(f"Chapter ID: {chapter_id}")
+
+        # Fetch chapter info from MangaDex API
+        api_url = f"https://api.mangadex.org/at-home/server/{chapter_id}"
+        log(f"Fetching from API: {api_url}")
+
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            req = urllib.request.Request(api_url, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                data = json.loads(response.read().decode())
+
+            base_url = data.get("baseUrl", "")
+            chapter_data = data.get("chapter", {})
+            chapter_hash = chapter_data.get("hash", "")
+            # Use full quality images (data), not compressed (dataSaver)
+            image_files = chapter_data.get("data", [])
+
+            if not base_url or not chapter_hash or not image_files:
+                log("API response missing required data")
+                return images
+
+            log(f"Found {len(image_files)} images")
+
+            # Construct full URLs
+            for i, filename in enumerate(image_files):
+                image_url = f"{base_url}/data/{chapter_hash}/{filename}"
+                images.append(ExtractedImage(
+                    url=image_url,
+                    width=1000,  # Dimensions unknown until downloaded
+                    height=1500,
+                    alt=f"Page {i + 1}",
+                ))
+
+            log(f"Extracted {len(images)} image URLs from MangaDex API")
+
+        except Exception as e:
+            log(f"MangaDex API error: {e}")
+
+        return images
 
     def download_image(
         self,
