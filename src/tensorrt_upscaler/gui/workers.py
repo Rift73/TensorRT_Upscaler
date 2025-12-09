@@ -68,6 +68,15 @@ class UpscaleWorker(QThread):
                     bf16=cfg.use_bf16,
                     backend=cfg.backend,
                     disable_tile_limit=cfg.disable_tile_limit,
+                    # PyTorch-specific options
+                    pytorch_model_path=getattr(cfg, 'pytorch_model_path', ''),
+                    pytorch_device=getattr(cfg, 'pytorch_device', 'cuda'),
+                    pytorch_half=getattr(cfg, 'pytorch_half', False),
+                    pytorch_bf16=getattr(cfg, 'pytorch_bf16', True),
+                    pytorch_vram_mode=getattr(cfg, 'pytorch_vram_mode', 'normal'),
+                    # PyTorch optimization options
+                    pytorch_enable_tf32=getattr(cfg, 'pytorch_enable_tf32', True),
+                    pytorch_channels_last=getattr(cfg, 'pytorch_channels_last', True),
                 )
 
             # Setup async saver for background PNG writing
@@ -247,6 +256,13 @@ class UpscaleWorker(QThread):
             finally:
                 async_saver.stop()
                 async_loader.shutdown()
+                # Explicitly release VRAM before thread ends
+                if upscaler is not None and hasattr(upscaler, 'engine'):
+                    try:
+                        if hasattr(upscaler.engine, 'release_vram'):
+                            upscaler.engine.release_vram()
+                    except Exception:
+                        pass
 
         except Exception as e:
             import traceback
@@ -288,31 +304,50 @@ class ClipboardWorker(QThread):
                 fp16=cfg.use_fp16,
                 bf16=cfg.use_bf16,
                 backend=cfg.backend,
+                disable_tile_limit=cfg.disable_tile_limit,
+                # PyTorch-specific options
+                pytorch_model_path=getattr(cfg, 'pytorch_model_path', ''),
+                pytorch_device=getattr(cfg, 'pytorch_device', 'cuda'),
+                pytorch_half=getattr(cfg, 'pytorch_half', False),
+                pytorch_bf16=getattr(cfg, 'pytorch_bf16', True),
+                pytorch_vram_mode=getattr(cfg, 'pytorch_vram_mode', 'normal'),
+                # PyTorch optimization options
+                pytorch_enable_tf32=getattr(cfg, 'pytorch_enable_tf32', True),
+                pytorch_channels_last=getattr(cfg, 'pytorch_channels_last', True),
             )
 
-            # Upscale with progress
-            def on_progress(current, total):
-                if not self._cancelled:
-                    self.progress.emit(current, total)
+            try:
+                # Upscale with progress
+                def on_progress(current, total):
+                    if not self._cancelled:
+                        self.progress.emit(current, total)
 
-            result = upscaler.upscale_array(img, img_has_alpha, on_progress)
+                result = upscaler.upscale_array(img, img_has_alpha, on_progress)
 
-            if self._cancelled:
-                self.finished.emit(False, "Cancelled", None)
-                return
+                if self._cancelled:
+                    self.finished.emit(False, "Cancelled", None)
+                    return
 
-            # Convert to PIL then QImage
-            result_uint8 = (result * 255.0).clip(0, 255).astype(np.uint8)
-            if img_has_alpha and result.shape[2] == 4:
-                pil_img = PILImage.fromarray(result_uint8, mode="RGBA")
-            else:
-                pil_img = PILImage.fromarray(result_uint8, mode="RGB")
+                # Convert to PIL then QImage
+                result_uint8 = (result * 255.0).clip(0, 255).astype(np.uint8)
+                if img_has_alpha and result.shape[2] == 4:
+                    pil_img = PILImage.fromarray(result_uint8, mode="RGBA")
+                else:
+                    pil_img = PILImage.fromarray(result_uint8, mode="RGB")
 
-            # Convert PIL to QImage
-            from PIL.ImageQt import ImageQt
-            qimg = ImageQt(pil_img).copy()  # .copy() ensures data persists
+                # Convert PIL to QImage
+                from PIL.ImageQt import ImageQt
+                qimg = ImageQt(pil_img).copy()  # .copy() ensures data persists
 
-            self.finished.emit(True, "Upscaled and copied to clipboard", qimg)
+                self.finished.emit(True, "Upscaled and copied to clipboard", qimg)
+
+            finally:
+                # Explicitly release VRAM before thread ends
+                if hasattr(upscaler, 'engine') and hasattr(upscaler.engine, 'release_vram'):
+                    try:
+                        upscaler.engine.release_vram()
+                    except Exception:
+                        pass
 
         except Exception as e:
             import traceback

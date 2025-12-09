@@ -75,6 +75,7 @@ from .utils import (
 from .gui import UpscaleWorker, ClipboardWorker, DropLineEdit, ThumbnailLabel
 from .dialogs import (
     CustomResolutionDialog,
+    PyTorchOptionsDialog,
     AnimatedOutputDialog,
     PngOptionsDialog,
     SettingsDialog,
@@ -207,9 +208,37 @@ class MainWindow(QMainWindow):
 
         # Backend selection dropdown
         self._backend_combo = QComboBox()
-        self._backend_combo.addItems(["TensorRT", "DirectML"])
-        self._backend_combo.setToolTip("TensorRT: NVIDIA GPUs (fastest)\nDirectML: Any GPU (AMD/Intel/NVIDIA)")
+        self._backend_combo.addItems(["TensorRT", "DirectML", "PyTorch"])
+        self._backend_combo.setToolTip(
+            "TensorRT: NVIDIA GPUs (fastest, requires ONNX)\n"
+            "DirectML: Any GPU (AMD/Intel/NVIDIA, requires ONNX)\n"
+            "PyTorch: Any GPU (supports .pth/.safetensors)"
+        )
         self._backend_combo.setFixedWidth(100)
+
+        # PyTorch model path (separate from ONNX)
+        self._pytorch_edit = QLineEdit()
+        self._pytorch_edit.setPlaceholderText("Path to .pth or .safetensors model")
+        self._btn_pytorch = QPushButton("Browse Model")
+        self._btn_recent_pytorch = QPushButton("Recent")
+        self._btn_recent_pytorch.setToolTip("Select from recently used PyTorch models")
+        self._btn_recent_pytorch.setFixedWidth(70)
+
+        # PyTorch VRAM mode dropdown
+        self._pytorch_vram_combo = QComboBox()
+        self._pytorch_vram_combo.addItems(["Normal", "Auto", "Low VRAM", "RamTorch"])
+        self._pytorch_vram_combo.setToolTip(
+            "Normal: Full GPU inference (fastest)\n"
+            "Auto: GPU first, offload to CPU on OOM\n"
+            "Low VRAM: Move model CPU<->GPU per tile (3-8x slower)\n"
+            "RamTorch: Layer-by-layer offloading (requires ramtorch package)"
+        )
+        self._pytorch_vram_combo.setFixedWidth(100)
+
+        # PyTorch Options button (opens dialog with precision/optimization settings)
+        self._pytorch_options_btn = QPushButton("Options...")
+        self._pytorch_options_btn.setToolTip("Configure PyTorch precision and optimization settings")
+        self._pytorch_options_btn.setFixedWidth(80)
 
         # Checkboxes
         self._same_dir_check = QCheckBox("Save next to input with suffix:")
@@ -393,6 +422,12 @@ class MainWindow(QMainWindow):
         main_layout = QGridLayout()
         central.setLayout(main_layout)
 
+        # Set column stretch: column 1 (input fields) should expand, others stay minimal
+        main_layout.setColumnStretch(0, 0)  # Label column - no stretch
+        main_layout.setColumnStretch(1, 1)  # Input fields - stretch to fill
+        main_layout.setColumnStretch(2, 0)  # Buttons - no stretch
+        main_layout.setColumnStretch(3, 0)  # Extra buttons/options - no stretch
+
         row = 0
 
         # Input row
@@ -417,19 +452,47 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(hint, row, 0, 1, 4)
         row += 1
 
-        # ONNX row with Recent and Queue buttons
-        main_layout.addWidget(QLabel("ONNX Model:"), row, 0)
+        # ONNX row with Recent and Queue buttons (for TensorRT/DirectML)
+        self._onnx_label = QLabel("ONNX Model:")
+        main_layout.addWidget(self._onnx_label, row, 0)
         main_layout.addWidget(self.onnx_edit, row, 1)
         onnx_btn_layout = QHBoxLayout()
         onnx_btn_layout.setSpacing(2)
         onnx_btn_layout.addWidget(self._btn_onnx)
         onnx_btn_layout.addWidget(self._btn_recent_onnx)
         onnx_btn_layout.addWidget(self._btn_model_queue)
-        onnx_btn_container = QWidget()
-        onnx_btn_container.setLayout(onnx_btn_layout)
-        main_layout.addWidget(onnx_btn_container, row, 2)
+        self._onnx_btn_container = QWidget()
+        self._onnx_btn_container.setLayout(onnx_btn_layout)
+        main_layout.addWidget(self._onnx_btn_container, row, 2)
         main_layout.addWidget(self._upscale_check, row, 3)
         row += 1
+
+        # PyTorch model row (for PyTorch backend)
+        self._pytorch_label = QLabel("PyTorch Model:")
+        main_layout.addWidget(self._pytorch_label, row, 0)
+        main_layout.addWidget(self._pytorch_edit, row, 1)
+        pytorch_btn_layout = QHBoxLayout()
+        pytorch_btn_layout.setSpacing(2)
+        pytorch_btn_layout.addWidget(self._btn_pytorch)
+        pytorch_btn_layout.addWidget(self._btn_recent_pytorch)
+        self._pytorch_btn_container = QWidget()
+        self._pytorch_btn_container.setLayout(pytorch_btn_layout)
+        main_layout.addWidget(self._pytorch_btn_container, row, 2)
+        # PyTorch options: VRAM mode and Options button
+        pytorch_opts_layout = QHBoxLayout()
+        pytorch_opts_layout.setSpacing(4)
+        pytorch_opts_layout.addWidget(self._pytorch_vram_combo)
+        pytorch_opts_layout.addWidget(self._pytorch_options_btn)
+        self._pytorch_opts_container = QWidget()
+        self._pytorch_opts_container.setLayout(pytorch_opts_layout)
+        main_layout.addWidget(self._pytorch_opts_container, row, 3)
+        row += 1
+
+        # Initially hide PyTorch widgets (shown when backend is PyTorch)
+        self._pytorch_label.hide()
+        self._pytorch_edit.hide()
+        self._pytorch_btn_container.hide()
+        self._pytorch_opts_container.hide()
 
         # Tile group
         tile_box = QGroupBox("Tile")
@@ -571,6 +634,10 @@ class MainWindow(QMainWindow):
         self._btn_onnx.clicked.connect(self._browse_onnx)
         self._btn_recent_onnx.clicked.connect(self._show_recent_onnx)
         self._btn_model_queue.clicked.connect(self._open_model_queue_dialog)
+        self._btn_pytorch.clicked.connect(self._browse_pytorch)
+        self._btn_recent_pytorch.clicked.connect(self._show_recent_pytorch)
+        self._pytorch_options_btn.clicked.connect(self._open_pytorch_options_dialog)
+        self._backend_combo.currentTextChanged.connect(self._on_backend_changed)
         self._start_button.clicked.connect(self._start_upscaling)
         self._cancel_button.clicked.connect(self._cancel)
         self._clipboard_button.clicked.connect(self._copy_to_clipboard)
@@ -617,6 +684,11 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self._update_sharpen_button_text()
 
+    def _open_pytorch_options_dialog(self):
+        """Open the PyTorch options dialog."""
+        dialog = PyTorchOptionsDialog(self, config=self.config)
+        dialog.exec()
+
     def _update_sharpen_button_text(self):
         """Update sharpen button text based on current config."""
         cfg = get_config()
@@ -641,6 +713,27 @@ class MainWindow(QMainWindow):
         ThemeManager.apply_theme(theme_name)
         self.config.theme = theme_name
         save_config()
+
+    def _on_backend_changed(self, backend_text: str):
+        """Handle backend dropdown change - show/hide PyTorch vs ONNX options."""
+        is_pytorch = backend_text == "PyTorch"
+
+        # Show/hide ONNX widgets
+        self._onnx_label.setVisible(not is_pytorch)
+        self.onnx_edit.setVisible(not is_pytorch)
+        self._onnx_btn_container.setVisible(not is_pytorch)
+
+        # Show/hide PyTorch widgets
+        self._pytorch_label.setVisible(is_pytorch)
+        self._pytorch_edit.setVisible(is_pytorch)
+        self._pytorch_btn_container.setVisible(is_pytorch)
+        self._pytorch_opts_container.setVisible(is_pytorch)
+
+        # Show/hide TensorRT-specific precision options
+        # BF16 is TensorRT-only
+        self._bf16_check.setVisible(not is_pytorch)
+        # FP16 for TensorRT/DirectML, PyTorch has its own checkbox
+        self._fp16_check.setVisible(not is_pytorch)
 
     def _update_file_list_ui(self):
         """Update the file list widget with current files."""
@@ -924,8 +1017,24 @@ class MainWindow(QMainWindow):
         self._fp16_check.setChecked(cfg.use_fp16)
         self._bf16_check.setChecked(cfg.use_bf16)
         # Backend dropdown
-        backend_text = "TensorRT" if cfg.backend == "tensorrt" else "DirectML"
+        if cfg.backend == "pytorch":
+            backend_text = "PyTorch"
+        elif cfg.backend == "directml":
+            backend_text = "DirectML"
+        else:
+            backend_text = "TensorRT"
         self._backend_combo.setCurrentText(backend_text)
+
+        # PyTorch settings
+        if cfg.pytorch_model_path and os.path.exists(cfg.pytorch_model_path):
+            self._pytorch_edit.setText(cfg.pytorch_model_path)
+        # VRAM mode dropdown
+        vram_mode_map = {"normal": "Normal", "auto": "Auto", "low_vram": "Low VRAM", "ramtorch": "RamTorch"}
+        self._pytorch_vram_combo.setCurrentText(vram_mode_map.get(cfg.pytorch_vram_mode, "Normal"))
+        # PyTorch precision/optimization options are loaded via PyTorchOptionsDialog
+
+        # Apply backend visibility
+        self._on_backend_changed(backend_text)
 
         # Output
         if cfg.last_output_path:
@@ -963,7 +1072,19 @@ class MainWindow(QMainWindow):
         cfg.use_fp16 = self._fp16_check.isChecked()
         cfg.use_bf16 = self._bf16_check.isChecked()
         # Backend
-        cfg.backend = "directml" if self._backend_combo.currentText() == "DirectML" else "tensorrt"
+        backend_text = self._backend_combo.currentText()
+        if backend_text == "PyTorch":
+            cfg.backend = "pytorch"
+        elif backend_text == "DirectML":
+            cfg.backend = "directml"
+        else:
+            cfg.backend = "tensorrt"
+
+        # PyTorch settings
+        cfg.pytorch_model_path = self._pytorch_edit.text()
+        vram_mode_map = {"Normal": "normal", "Auto": "auto", "Low VRAM": "low_vram", "RamTorch": "ramtorch"}
+        cfg.pytorch_vram_mode = vram_mode_map.get(self._pytorch_vram_combo.currentText(), "normal")
+        # PyTorch precision/optimization options are saved via PyTorchOptionsDialog
 
         # Output
         cfg.last_output_path = self._output_edit.text()
@@ -1048,6 +1169,80 @@ class MainWindow(QMainWindow):
             path = action.data()
             self.onnx_edit.setText(path)
             self._add_to_recent_onnx(path)  # Move to top
+
+    def _browse_pytorch(self):
+        """Browse for PyTorch model file (.pth, .safetensors, .ckpt)."""
+        start_dir = self.config.last_pytorch_directory or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select PyTorch Model",
+            start_dir,
+            "PyTorch Models (*.pth *.safetensors *.ckpt *.pt);;All Files (*.*)"
+        )
+        if path:
+            self._pytorch_edit.setText(path)
+            self.config.last_pytorch_directory = os.path.dirname(path)
+            self.config.pytorch_model_path = path
+            self._add_to_recent_pytorch(path)
+            save_config()
+
+    def _add_to_recent_pytorch(self, path: str):
+        """Add path to recent PyTorch models list."""
+        try:
+            recent = json.loads(getattr(self.config, 'recent_pytorch_paths', '[]'))
+        except json.JSONDecodeError:
+            recent = []
+
+        # Remove if already exists (to move to top)
+        if path in recent:
+            recent.remove(path)
+
+        # Add to front
+        recent.insert(0, path)
+
+        # Limit to max items
+        max_items = self.config.max_recent_items
+        recent = recent[:max_items]
+
+        # Store in config (we'll add this field)
+        # For now, reuse recent_onnx_paths format but with a different key
+        # Actually, let's store it in a simple way
+        self.config.recent_pytorch_paths = json.dumps(recent)
+        save_config()
+
+    def _show_recent_pytorch(self):
+        """Show dropdown menu with recent PyTorch models."""
+        try:
+            recent = json.loads(getattr(self.config, 'recent_pytorch_paths', '[]'))
+        except json.JSONDecodeError:
+            recent = []
+
+        if not recent:
+            QMessageBox.information(self, "No Recent", "No recent PyTorch models found.")
+            return
+
+        # Create popup menu
+        menu = QMenu(self)
+        for path in recent:
+            if os.path.exists(path):
+                action = menu.addAction(os.path.basename(path))
+                action.setToolTip(path)
+                action.setData(path)
+
+        if menu.isEmpty():
+            QMessageBox.information(self, "No Recent", "No recent PyTorch models found (files may have been moved).")
+            return
+
+        # Show menu below button
+        action = menu.exec_(self._btn_recent_pytorch.mapToGlobal(
+            self._btn_recent_pytorch.rect().bottomLeft()
+        ))
+
+        if action:
+            path = action.data()
+            self._pytorch_edit.setText(path)
+            self.config.pytorch_model_path = path
+            self._add_to_recent_pytorch(path)  # Move to top
 
     def _browse_output(self):
         """Browse for output directory."""
@@ -1138,6 +1333,11 @@ class MainWindow(QMainWindow):
             self._progress_label.setText(f"Clipboard failed: {message}")
             if not success:
                 QMessageBox.warning(self, "Error", f"Failed to upscale: {message}")
+
+        # Wait for thread to fully finish before releasing reference
+        if self._clipboard_worker is not None:
+            self._clipboard_worker.wait()
+            self._clipboard_worker = None
 
     # Dialog openers
     def _open_resolution_dialog(self):
@@ -1699,6 +1899,9 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Error", message)
 
+        # Wait for thread to fully finish before releasing reference
+        if self.worker is not None:
+            self.worker.wait()
         self.worker = None
 
         # Multi-model queue: check for next model

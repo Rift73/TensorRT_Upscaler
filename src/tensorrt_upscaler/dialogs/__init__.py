@@ -12,6 +12,9 @@ For new dialogs, create separate files in this package:
 # Re-export from resolution.py (refactored)
 from .resolution import CustomResolutionDialog
 
+# Re-export from pytorch_options.py
+from .pytorch_options import PyTorchOptionsDialog
+
 # Re-export remaining dialogs from legacy module
 # These can be moved to separate files as needed
 from ..dialogs_legacy import (
@@ -28,6 +31,7 @@ from ..dialogs_legacy import (
 
 __all__ = [
     "CustomResolutionDialog",
+    "PyTorchOptionsDialog",
     "AnimatedOutputDialog",
     "PngOptionsDialog",
     "SettingsDialog",

@@ -26,8 +26,20 @@ class Config:
     use_fp16: bool = False
     use_bf16: bool = True
     use_tf32: bool = False
-    backend: str = "tensorrt"  # tensorrt or directml
+    backend: str = "tensorrt"  # tensorrt, directml, or pytorch
     disable_tile_limit: bool = False  # Disable 64-alignment requirement for tiles
+
+    # PyTorch backend settings
+    pytorch_model_path: str = ""
+    pytorch_device: str = "cuda"  # cuda, cuda:0, cpu
+    pytorch_half: bool = False  # FP16 precision
+    pytorch_bf16: bool = True  # BF16 precision (Ampere+ GPUs)
+    pytorch_vram_mode: str = "normal"  # normal, auto, low_vram, ramtorch
+    last_pytorch_directory: str = ""
+    recent_pytorch_paths: str = "[]"  # JSON list of recent PyTorch model paths
+    # PyTorch optimization settings
+    pytorch_enable_tf32: bool = True  # TensorFloat32 for matmuls/convolutions (Ampere+)
+    pytorch_channels_last: bool = True  # NHWC memory format (faster for CNNs)
 
     # Output filename options (#9-13)
     save_next_to_input: bool = False

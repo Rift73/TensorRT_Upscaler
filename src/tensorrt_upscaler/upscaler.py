@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .engine import TensorRTEngine
 from .dml_engine import DirectMLEngine, is_directml_available
+from .pytorch_engine import PyTorchEngine, is_pytorch_available
 from .fast_io import load_image_fast, save_image_fast, CV2_AVAILABLE
 
 # Try to import Numba for JIT acceleration
@@ -109,7 +110,7 @@ class ImageUpscaler:
 
     def __init__(
         self,
-        onnx_path: str,
+        onnx_path: str = "",
         tile_size: Tuple[int, int] = (512, 512),
         overlap: int = 16,
         fp16: bool = False,
@@ -117,31 +118,63 @@ class ImageUpscaler:
         tf32: bool = False,
         backend: str = "tensorrt",
         disable_tile_limit: bool = False,
+        # PyTorch-specific options
+        pytorch_model_path: str = "",
+        pytorch_device: str = "cuda",
+        pytorch_half: bool = False,
+        pytorch_bf16: bool = True,
+        pytorch_vram_mode: str = "normal",
+        # PyTorch optimization options
+        pytorch_enable_tf32: bool = True,
+        pytorch_channels_last: bool = True,
     ):
         """
-        Initialize upscaler with TensorRT or DirectML engine.
+        Initialize upscaler with TensorRT, DirectML, or PyTorch engine.
 
         Args:
-            onnx_path: Path to ONNX super-resolution model
+            onnx_path: Path to ONNX super-resolution model (for TensorRT/DirectML)
             tile_size: Tile size (width, height) for processing - also used as max engine shape
             overlap: Overlap between tiles in pixels
-            fp16: Enable FP16 precision
+            fp16: Enable FP16 precision (TensorRT/DirectML)
             bf16: Enable BF16 precision (default, TensorRT only)
             tf32: Enable TF32 precision (TensorRT only)
-            backend: "tensorrt" or "directml"
+            backend: "tensorrt", "directml", or "pytorch"
             disable_tile_limit: When True, skip tile alignment to 64 and padding
+            pytorch_model_path: Path to .pth/.safetensors model (for PyTorch)
+            pytorch_device: Device for PyTorch ("cuda", "cpu")
+            pytorch_half: Use FP16 for PyTorch
+            pytorch_bf16: Use BF16 for PyTorch (Ampere+ GPUs)
+            pytorch_vram_mode: VRAM mode for PyTorch ("normal", "auto", "low_vram")
+            pytorch_enable_tf32: Enable TF32 for matmuls/convolutions (Ampere+)
+            pytorch_channels_last: Use NHWC memory format (faster for CNNs)
         """
         self.tile_w, self.tile_h = tile_size
         self.overlap = overlap
         self.backend = backend
         self.disable_tile_limit = disable_tile_limit
 
-        # Align tile size to 64 (unless disabled)
-        if not disable_tile_limit:
+        # Align tile size to 64 (unless disabled or using PyTorch)
+        # PyTorch models are more flexible with input sizes
+        if not disable_tile_limit and backend != "pytorch":
             self.tile_w = (self.tile_w // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
             self.tile_h = (self.tile_h // self.TILE_ALIGNMENT) * self.TILE_ALIGNMENT
 
-        if backend == "directml":
+        if backend == "pytorch":
+            if not is_pytorch_available():
+                raise RuntimeError(
+                    "PyTorch backend requested but not available. "
+                    "Install with: pip install torch spandrel spandrel_extra_arches"
+                )
+            self.engine = PyTorchEngine(
+                model_path=pytorch_model_path,
+                device=pytorch_device,
+                half=pytorch_half,
+                bf16=pytorch_bf16,
+                vram_mode=pytorch_vram_mode,
+                enable_tf32=pytorch_enable_tf32,
+                channels_last=pytorch_channels_last,
+            )
+        elif backend == "directml":
             if not is_directml_available():
                 raise RuntimeError(
                     "DirectML backend requested but not available. "
@@ -225,7 +258,7 @@ class ImageUpscaler:
 
         # Check if tiling is needed
         if width <= self.tile_w and height <= self.tile_h:
-            arr = self._pad_to_alignment(img)
+            arr = self._prepare_tile(img)
             result = self.engine.infer(arr)
             result = self._unpad_result(result, width * self.scale, height * self.scale)
             if progress_callback:
@@ -247,14 +280,14 @@ class ImageUpscaler:
             # Extract and start first tile
             x0, y0, tw0, th0 = tiles[0]
             tile0 = self._extract_tile(img, x0, y0, tw0, th0)
-            tile0 = self._pad_to_alignment(tile0)
+            tile0 = self._prepare_tile(tile0)
             buf_idx0, out_shape0 = self.engine.infer_async_start(tile0, buf_idx=0)
 
             for i in range(1, total_tiles):
                 # Extract and start next tile on alternate buffer
                 xi, yi, twi, thi = tiles[i]
                 tile_i = self._extract_tile(img, xi, yi, twi, thi)
-                tile_i = self._pad_to_alignment(tile_i)
+                tile_i = self._prepare_tile(tile_i)
                 buf_idx_i, out_shape_i = self.engine.infer_async_start(tile_i, buf_idx=i % 2)
 
                 # Wait for previous tile and blend
@@ -289,7 +322,7 @@ class ImageUpscaler:
             # Fallback: sequential processing
             for i, (x, y, tw, th) in enumerate(tiles):
                 tile = self._extract_tile(img, x, y, tw, th)
-                tile = self._pad_to_alignment(tile)
+                tile = self._prepare_tile(tile)
                 result = self.engine.infer(tile)
                 result = self._unpad_result(result, tw * self.scale, th * self.scale)
                 self._blend_tile(output, weights, result, x, y, tw, th)
@@ -382,7 +415,7 @@ class ImageUpscaler:
         if width <= self.tile_w and height <= self.tile_h:
             # Process entire image at once
             arr = np.array(image).astype(np.float32) / 255.0
-            arr = self._pad_to_alignment(arr)
+            arr = self._prepare_tile(arr)
             result = self.engine.infer(arr)
             result = self._unpad_result(result, width * self.scale, height * self.scale)
             result = (result * 255.0).clip(0, 255).astype(np.uint8)
@@ -468,6 +501,39 @@ class ImageUpscaler:
 
         return np.pad(arr, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
 
+    def _pad_to_tile_size(self, arr: np.ndarray) -> np.ndarray:
+        """Pad array to full tile size for consistent cuDNN benchmark caching.
+
+        cuDNN benchmark mode caches the fastest algorithm per input shape.
+        By ensuring all tiles are the same size, we only benchmark once.
+        """
+        h, w = arr.shape[:2]
+
+        # Already full size
+        if h == self.tile_h and w == self.tile_w:
+            return arr
+
+        pad_h = self.tile_h - h
+        pad_w = self.tile_w - w
+
+        if pad_h <= 0 and pad_w <= 0:
+            return arr
+
+        return np.pad(arr, ((0, max(0, pad_h)), (0, max(0, pad_w)), (0, 0)), mode="reflect")
+
+    def _prepare_tile(self, arr: np.ndarray) -> np.ndarray:
+        """Prepare tile for inference with appropriate padding.
+
+        For PyTorch backend: no alignment needed (flexible input sizes).
+        For other backends: pad to alignment (64 pixels).
+        """
+        if self.backend == "pytorch":
+            # PyTorch doesn't need alignment padding
+            return arr
+        else:
+            # TensorRT/DirectML: align to 64
+            return self._pad_to_alignment(arr)
+
     def _unpad_result(self, arr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
         """Remove padding from result to match target size."""
         return arr[:target_h, :target_w]
@@ -510,7 +576,7 @@ class ImageUpscaler:
 def upscale_file(
     input_path: str,
     output_path: str,
-    onnx_path: str,
+    onnx_path: str = "",
     tile_size: Tuple[int, int] = (512, 512),
     overlap: int = 16,
     fp16: bool = False,
@@ -518,6 +584,15 @@ def upscale_file(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     backend: str = "tensorrt",
     disable_tile_limit: bool = False,
+    # PyTorch-specific options
+    pytorch_model_path: str = "",
+    pytorch_device: str = "cuda",
+    pytorch_half: bool = False,
+    pytorch_bf16: bool = True,
+    pytorch_vram_mode: str = "normal",
+    # PyTorch optimization options
+    pytorch_enable_tf32: bool = True,
+    pytorch_channels_last: bool = True,
 ) -> bool:
     """
     Convenience function to upscale an image file.
@@ -526,14 +601,21 @@ def upscale_file(
     Args:
         input_path: Path to input image
         output_path: Path to save upscaled image
-        onnx_path: Path to ONNX model
+        onnx_path: Path to ONNX model (for TensorRT/DirectML)
         tile_size: Tile size for processing
         overlap: Overlap between tiles
         fp16: Use FP16 precision
         bf16: Use BF16 precision
         progress_callback: Progress callback
-        backend: "tensorrt" or "directml"
+        backend: "tensorrt", "directml", or "pytorch"
         disable_tile_limit: Skip tile alignment and padding
+        pytorch_model_path: Path to .pth/.safetensors model (for PyTorch)
+        pytorch_device: Device for PyTorch ("cuda", "cpu")
+        pytorch_half: Use FP16 for PyTorch
+        pytorch_bf16: Use BF16 for PyTorch (Ampere+ GPUs)
+        pytorch_vram_mode: VRAM mode for PyTorch ("normal", "auto", "low_vram")
+        pytorch_enable_tf32: Enable TF32 for matmuls/convolutions (Ampere+)
+        pytorch_channels_last: Use NHWC memory format (faster for CNNs)
 
     Returns:
         True if successful
@@ -547,6 +629,13 @@ def upscale_file(
             bf16=bf16,
             backend=backend,
             disable_tile_limit=disable_tile_limit,
+            pytorch_model_path=pytorch_model_path,
+            pytorch_device=pytorch_device,
+            pytorch_half=pytorch_half,
+            pytorch_bf16=pytorch_bf16,
+            pytorch_vram_mode=pytorch_vram_mode,
+            pytorch_enable_tf32=pytorch_enable_tf32,
+            pytorch_channels_last=pytorch_channels_last,
         )
 
         # Use fast I/O
