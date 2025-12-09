@@ -66,10 +66,10 @@ if NUMBA_AVAILABLE:
         kernel_radius = 1.0
 
         if scale < 1.0:
-            kernel_scale = 1.0 / scale
-            effective_radius = kernel_radius * kernel_scale
+            # Downscaling: widen window but don't scale kernel distances
+            # This averages more source pixels with proper Hermite weighting
+            effective_radius = kernel_radius / scale
         else:
-            kernel_scale = 1.0
             effective_radius = kernel_radius
 
         if axis == 0:
@@ -83,7 +83,8 @@ if NUMBA_AVAILABLE:
                         val = 0.0
                         weight_sum = 0.0
                         for k in range(left, right + 1):
-                            dist = (out_coord - k) * kernel_scale
+                            # Don't scale distances - use fractional distance to source pixel
+                            dist = (out_coord - k) / effective_radius
                             w = _hermite_kernel_numba(dist)
                             idx = max(0, min(old_size - 1, k))
                             val += w * data[idx, j, c]
@@ -101,7 +102,8 @@ if NUMBA_AVAILABLE:
                         val = 0.0
                         weight_sum = 0.0
                         for k in range(left, right + 1):
-                            dist = (out_coord - k) * kernel_scale
+                            # Don't scale distances - use fractional distance to source pixel
+                            dist = (out_coord - k) / effective_radius
                             w = _hermite_kernel_numba(dist)
                             idx = max(0, min(old_size - 1, k))
                             val += w * data[i, idx, c]
@@ -195,12 +197,10 @@ def _resize_1d(
     # Scale factor
     scale = new_size / old_size
 
-    # For downscaling, we need to widen the kernel
+    # For downscaling, we need to widen the kernel window
     if scale < 1.0:
-        kernel_scale = 1.0 / scale
-        effective_radius = kernel_radius * kernel_scale
+        effective_radius = kernel_radius / scale
     else:
-        kernel_scale = 1.0
         effective_radius = kernel_radius
 
     # Output coordinates in input space
@@ -221,8 +221,9 @@ def _resize_1d(
         l, r = left[i], right[i]
         window_indices = np.arange(l, r + 1)
 
-        # Distance from output coord to each input coord
-        distances = (out_coords[i] - window_indices) * kernel_scale
+        # Fractional distance from output coord to each input coord
+        # Normalized by effective_radius so kernel sees values in [-1, 1]
+        distances = (out_coords[i] - window_indices) / effective_radius
 
         # Compute weights
         w = kernel_func(distances)

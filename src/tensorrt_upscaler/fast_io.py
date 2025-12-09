@@ -97,13 +97,60 @@ def _load_image_pil(path: str) -> Tuple[np.ndarray, bool]:
     return img, has_alpha
 
 
+def _strip_resolution_from_exif(exif_bytes: bytes) -> Optional[bytes]:
+    """
+    Strip resolution-related tags from EXIF data.
+
+    These tags cause image viewers to display upscaled images at wrong sizes
+    because the original DPI is preserved but pixel count increased.
+    """
+    try:
+        from PIL.ExifTags import Base as ExifBase
+        import io
+
+        # Parse EXIF
+        exif_img = Image.new('RGB', (1, 1))
+        exif_img.info['exif'] = exif_bytes
+        exif_data = exif_img.getexif()
+
+        if not exif_data:
+            return exif_bytes
+
+        # Tags to remove (resolution-related)
+        # 282 = XResolution, 283 = YResolution, 296 = ResolutionUnit
+        resolution_tags = {282, 283, 296}
+
+        # Remove resolution tags from main IFD
+        for tag in resolution_tags:
+            if tag in exif_data:
+                del exif_data[tag]
+
+        # Also check EXIF IFD for pixel dimensions
+        # 40962 = PixelXDimension, 40963 = PixelYDimension
+        # These should be updated to new size, but since we don't know the new size here,
+        # just remove them - they're optional
+        exif_ifd = exif_data.get_ifd(0x8769)  # EXIF IFD pointer
+        if exif_ifd:
+            for tag in [40962, 40963]:
+                if tag in exif_ifd:
+                    del exif_ifd[tag]
+
+        # Convert back to bytes
+        return exif_data.tobytes()
+
+    except Exception:
+        # If anything fails, return None to skip EXIF entirely
+        # Better to lose metadata than have display issues
+        return None
+
+
 def extract_image_metadata(path: str) -> Dict[str, Any]:
     """
     Extract ICC profile and other metadata from source image.
 
     Returns dict with:
         - icc_profile: bytes or None
-        - exif: bytes or None
+        - exif: bytes or None (with resolution tags stripped)
         - pnginfo: PngInfo or None (for PNG text chunks)
     """
     metadata = {
@@ -117,16 +164,18 @@ def extract_image_metadata(path: str) -> Dict[str, Any]:
             # ICC Profile (color profile)
             metadata['icc_profile'] = img.info.get('icc_profile')
 
-            # EXIF data
-            metadata['exif'] = img.info.get('exif')
+            # EXIF data (strip resolution tags to prevent display size issues)
+            exif_bytes = img.info.get('exif')
+            if exif_bytes:
+                metadata['exif'] = _strip_resolution_from_exif(exif_bytes)
 
             # PNG text chunks (includes things like software, description, etc.)
             if img.format == 'PNG':
                 pnginfo = PngImagePlugin.PngInfo()
                 for key, value in img.info.items():
                     if isinstance(key, str) and isinstance(value, str):
-                        # Skip binary data keys
-                        if key not in ('icc_profile', 'exif', 'transparency'):
+                        # Skip binary data keys and resolution-related keys
+                        if key not in ('icc_profile', 'exif', 'transparency', 'dpi', 'aspect'):
                             try:
                                 pnginfo.add_text(key, value)
                             except Exception:

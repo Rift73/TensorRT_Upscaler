@@ -1660,7 +1660,9 @@ class SplitCompareWidget(QWidget):
 
         self._is_fit_mode = False
 
-        if abs(self._zoom_scale - self._fit_scale) < 0.05:
+        # Use relative comparison (within 5% of fit scale) instead of absolute
+        # This handles small fit_scale values correctly (e.g., 0.12 for 4x upscaled images)
+        if self._fit_scale > 0 and abs(self._zoom_scale / self._fit_scale - 1.0) < 0.05:
             self._is_fit_mode = True
             self._zoom_scale = self._fit_scale
 
@@ -1898,6 +1900,7 @@ class ComparisonDialog(QDialog):
             if os.path.exists(self.before_path) and os.path.exists(self.after_path):
                 self.compare_widget.set_images(self.before_path, self.after_path)
                 self.info_label.setText("Scroll to zoom, Right-drag to pan, Left-drag to move slider")
+                QTimer.singleShot(100, self.compare_widget.setFocus)
 
     def _upscale_to_memory(self):
         """Upscale the before image to memory for comparison."""
@@ -1941,11 +1944,25 @@ class ComparisonDialog(QDialog):
                     from PIL import Image as PILImage
                     from tensorrt_upscaler.upscaler import ImageUpscaler
                     from tensorrt_upscaler.fast_io import load_image_fast
+                    from tensorrt_upscaler.resize import resize_array, compute_scaled_size
+                    from tensorrt_upscaler.sharpening import cas_sharpen_array, adaptive_sharpen_array
 
                     cfg = self.config
 
                     # Load image
                     img, has_alpha = load_image_fast(self.image_path)
+                    height, width = img.shape[:2]
+
+                    # Pre-scale (before upscaling)
+                    if cfg.prescale_enabled:
+                        new_size = compute_scaled_size(
+                            width, height,
+                            cfg.prescale_mode,
+                            cfg.prescale_width,
+                            cfg.prescale_height,
+                        )
+                        img = resize_array(img, new_size, cfg.prescale_kernel, has_alpha)
+                        height, width = img.shape[:2]
 
                     # Create upscaler
                     upscaler = ImageUpscaler(
@@ -1961,11 +1978,35 @@ class ComparisonDialog(QDialog):
                         self.progress.emit(current, total)
 
                     result = upscaler.upscale_array(img, has_alpha, on_progress)
+                    height, width = result.shape[:2]
 
                     # Release VRAM immediately after upscale (result is in system RAM)
                     del upscaler
                     upscaler = None
                     gc.collect()
+
+                    # Custom resolution (after upscaling)
+                    if cfg.custom_res_enabled:
+                        new_size = compute_scaled_size(
+                            width, height,
+                            cfg.custom_res_mode,
+                            cfg.custom_res_width,
+                            cfg.custom_res_height,
+                            keep_aspect=cfg.custom_res_keep_aspect,
+                        )
+                        result = resize_array(result, new_size, cfg.custom_res_kernel, has_alpha)
+
+                    # Sharpening (after custom resolution)
+                    if cfg.sharpen_enabled and cfg.sharpen_value > 0:
+                        sharpen_method = getattr(cfg, 'sharpen_method', 'cas')
+                        if sharpen_method == 'adaptive':
+                            anime_mode = getattr(cfg, 'sharpen_anime_mode', False)
+                            result = adaptive_sharpen_array(
+                                result, cfg.sharpen_value, has_alpha,
+                                overshoot_ctrl=False, anime_mode=anime_mode
+                            )
+                        else:  # cas or legacy
+                            result = cas_sharpen_array(result, cfg.sharpen_value, has_alpha)
 
                     # Convert to PIL
                     result_uint8 = (result * 255.0).clip(0, 255).astype(np.uint8)
@@ -2007,7 +2048,9 @@ class ComparisonDialog(QDialog):
         if success and pil_result and self._before_pil:
             self.compare_widget.set_pil_images(self._before_pil, pil_result)
             self.after_edit.setText("(in memory)")
-            self.info_label.setText("Ctrl+Scroll to zoom, Right-drag to pan, Left-drag to move slider")
+            self.info_label.setText("Scroll to zoom, Right-drag to pan, Left-drag to move slider")
+            # Ensure compare widget has focus for zoom/pan to work (delay to ensure UI is ready)
+            QTimer.singleShot(100, self.compare_widget.setFocus)
         else:
             QMessageBox.warning(self, "Upscale Failed", f"Failed to upscale: {message}")
 
@@ -2040,6 +2083,13 @@ class ComparisonDialog(QDialog):
                 self.accept()
         else:
             super().keyPressEvent(event)
+
+    def wheelEvent(self, event):
+        """Forward wheel events to compare widget for zooming."""
+        if hasattr(self, 'compare_widget'):
+            self.compare_widget.wheelEvent(event)
+        else:
+            super().wheelEvent(event)
 
 
 class CropSelectionWidget(QWidget):
