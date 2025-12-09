@@ -128,7 +128,7 @@ class ImageUpscaler:
         pytorch_enable_tf32: bool = True,
         pytorch_channels_last: bool = True,
         pytorch_cudnn_benchmark: bool = True,
-        pytorch_torch_compile: bool = False,
+        pytorch_torch_compile: str = "off",
     ):
         """
         Initialize upscaler with TensorRT, DirectML, or PyTorch engine.
@@ -150,7 +150,7 @@ class ImageUpscaler:
             pytorch_enable_tf32: Enable TF32 for matmuls/convolutions (Ampere+)
             pytorch_channels_last: Use NHWC memory format (faster for CNNs)
             pytorch_cudnn_benchmark: Enable cuDNN benchmark for optimal conv algorithms
-            pytorch_torch_compile: Enable torch.compile JIT compilation
+            pytorch_torch_compile: torch.compile mode (off/default/reduce-overhead/max-autotune)
         """
         self.tile_w, self.tile_h = tile_size
         self.overlap = overlap
@@ -608,7 +608,7 @@ def upscale_file(
     pytorch_enable_tf32: bool = True,
     pytorch_channels_last: bool = True,
     pytorch_cudnn_benchmark: bool = True,
-    pytorch_torch_compile: bool = False,
+    pytorch_torch_compile: str = "off",
 ) -> bool:
     """
     Convenience function to upscale an image file.
@@ -633,7 +633,7 @@ def upscale_file(
         pytorch_enable_tf32: Enable TF32 for matmuls/convolutions (Ampere+)
         pytorch_channels_last: Use NHWC memory format (faster for CNNs)
         pytorch_cudnn_benchmark: Enable cuDNN benchmark for optimal conv algorithms
-        pytorch_torch_compile: Enable torch.compile JIT compilation
+        pytorch_torch_compile: torch.compile mode (off/default/reduce-overhead/max-autotune)
 
     Returns:
         True if successful

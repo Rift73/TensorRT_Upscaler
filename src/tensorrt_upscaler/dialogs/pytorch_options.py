@@ -8,10 +8,21 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QGroupBox,
     QCheckBox,
+    QComboBox,
+    QLabel,
     QPushButton,
     QGridLayout,
 )
 from PySide6.QtCore import Qt
+
+
+# torch.compile modes with descriptions
+TORCH_COMPILE_MODES = [
+    ("off", "Off"),
+    ("default", "Default (Inductor)"),
+    ("reduce-overhead", "Reduce Overhead (CUDA Graphs)"),
+    ("max-autotune", "Max Autotune"),
+]
 
 
 class PyTorchOptionsDialog(QDialog):
@@ -21,7 +32,7 @@ class PyTorchOptionsDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle("PyTorch Options")
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(400)
 
         self._setup_ui()
         self._load_from_config()
@@ -80,20 +91,29 @@ class PyTorchOptionsDialog(QDialog):
             "Recommended: ON for batch processing, OFF for single images."
         )
 
-        self._torch_compile_check = QCheckBox("torch.compile")
-        self._torch_compile_check.setToolTip(
-            "JIT compile the model for optimized inference (PyTorch 2.0+).\n\n"
-            "• First batch: ~30-60s extra for JIT compilation (warmup)\n"
-            "• Subsequent images: ~20-40% faster inference\n"
-            "• Uses CUDA Graphs to reduce kernel launch overhead\n"
-            "• Requires static tile sizes (recompiles if size changes)\n\n"
-            "Best for: batch processing many images with consistent tile size.\n"
-            "Not recommended for: single images or frequently changing tile sizes."
-        )
-
         optim_layout.addWidget(self._channels_last_check, 0, 0)
         optim_layout.addWidget(self._cudnn_benchmark_check, 0, 1)
-        optim_layout.addWidget(self._torch_compile_check, 1, 0)
+
+        # torch.compile dropdown
+        compile_row = QHBoxLayout()
+        compile_row.addWidget(QLabel("torch.compile:"))
+
+        self._torch_compile_combo = QComboBox()
+        for mode_id, mode_name in TORCH_COMPILE_MODES:
+            self._torch_compile_combo.addItem(mode_name, mode_id)
+        self._torch_compile_combo.setToolTip(
+            "JIT compile the model for optimized inference (PyTorch 2.0+).\n\n"
+            "• Off: No compilation (default, most compatible)\n"
+            "• Default: Inductor backend with Triton kernels (~10-30% faster)\n"
+            "• Reduce Overhead: Uses CUDA Graphs (~20-40% faster, may fail on some models)\n"
+            "• Max Autotune: Tries all kernel variants (slowest compile, fastest inference)\n\n"
+            "All modes have slow first batch (~30-60s) for JIT compilation.\n"
+            "Best for: batch processing many images with consistent tile size."
+        )
+        compile_row.addWidget(self._torch_compile_combo)
+        compile_row.addStretch()
+
+        optim_layout.addLayout(compile_row, 1, 0, 1, 2)
 
         layout.addWidget(optim_group)
 
@@ -136,7 +156,14 @@ class PyTorchOptionsDialog(QDialog):
         self._tf32_check.setChecked(self.config.pytorch_enable_tf32)
         self._channels_last_check.setChecked(self.config.pytorch_channels_last)
         self._cudnn_benchmark_check.setChecked(getattr(self.config, 'pytorch_cudnn_benchmark', True))
-        self._torch_compile_check.setChecked(getattr(self.config, 'pytorch_torch_compile', False))
+
+        # Handle torch_compile - can be bool (old) or str (new)
+        compile_value = getattr(self.config, 'pytorch_torch_compile', 'off')
+        if isinstance(compile_value, bool):
+            compile_value = 'reduce-overhead' if compile_value else 'off'
+        idx = self._torch_compile_combo.findData(compile_value)
+        if idx >= 0:
+            self._torch_compile_combo.setCurrentIndex(idx)
 
     def _save_to_config(self):
         """Save settings to config."""
@@ -148,7 +175,7 @@ class PyTorchOptionsDialog(QDialog):
         self.config.pytorch_enable_tf32 = self._tf32_check.isChecked()
         self.config.pytorch_channels_last = self._channels_last_check.isChecked()
         self.config.pytorch_cudnn_benchmark = self._cudnn_benchmark_check.isChecked()
-        self.config.pytorch_torch_compile = self._torch_compile_check.isChecked()
+        self.config.pytorch_torch_compile = self._torch_compile_combo.currentData()
 
     def _restore_defaults(self):
         """Restore default settings."""
@@ -157,7 +184,7 @@ class PyTorchOptionsDialog(QDialog):
         self._tf32_check.setChecked(True)
         self._channels_last_check.setChecked(True)
         self._cudnn_benchmark_check.setChecked(True)
-        self._torch_compile_check.setChecked(False)
+        self._torch_compile_combo.setCurrentIndex(0)  # Off
 
     def _on_ok(self):
         """Save and close."""
@@ -172,5 +199,5 @@ class PyTorchOptionsDialog(QDialog):
             "pytorch_enable_tf32": self._tf32_check.isChecked(),
             "pytorch_channels_last": self._channels_last_check.isChecked(),
             "pytorch_cudnn_benchmark": self._cudnn_benchmark_check.isChecked(),
-            "pytorch_torch_compile": self._torch_compile_check.isChecked(),
+            "pytorch_torch_compile": self._torch_compile_combo.currentData(),
         }

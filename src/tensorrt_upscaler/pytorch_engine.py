@@ -102,7 +102,7 @@ class PyTorchEngine:
         enable_tf32: bool = True,  # TensorFloat32 for matmuls/convolutions
         channels_last: bool = True,  # NHWC memory format
         cudnn_benchmark: bool = True,  # cuDNN auto-tuner
-        torch_compile: bool = False,  # torch.compile JIT compilation
+        torch_compile: str = "off",  # off, default, reduce-overhead, max-autotune
     ):
         """
         Initialize PyTorch engine from model file.
@@ -116,7 +116,7 @@ class PyTorchEngine:
             enable_tf32: Enable TensorFloat32 for matmuls/convolutions (Ampere+)
             channels_last: Use NHWC memory format (faster for CNNs)
             cudnn_benchmark: Enable cuDNN benchmark mode for optimal conv algorithms
-            torch_compile: Enable torch.compile JIT compilation (slower startup)
+            torch_compile: torch.compile mode (off/default/reduce-overhead/max-autotune)
         """
         if not TORCH_AVAILABLE:
             raise RuntimeError(
@@ -147,7 +147,11 @@ class PyTorchEngine:
         self.enable_tf32 = enable_tf32 and device != "cpu"
         self.channels_last = channels_last and device != "cpu"
         self.cudnn_benchmark = cudnn_benchmark and device != "cpu"
-        self.torch_compile = torch_compile and device != "cpu"
+        # Handle torch_compile - can be bool (legacy) or str (new)
+        if isinstance(torch_compile, bool):
+            self.torch_compile = "reduce-overhead" if torch_compile else "off"
+        else:
+            self.torch_compile = torch_compile if device != "cpu" else "off"
         self._compiled_model = None  # Will hold compiled model if torch_compile is enabled
         self._needs_warmup = False  # Whether warmup is needed for compiled model
 
@@ -231,26 +235,36 @@ class PyTorchEngine:
 
     def _apply_torch_compile(self):
         """Apply torch.compile to the model for optimized inference."""
+        if self.torch_compile == "off":
+            return
+
         try:
             # Check PyTorch version (torch.compile requires 2.0+)
             torch_version = tuple(map(int, torch.__version__.split('.')[:2]))
             if torch_version < (2, 0):
                 print(f"[PyTorch] Warning: torch.compile requires PyTorch 2.0+, got {torch.__version__}")
-                self.torch_compile = False
+                self.torch_compile = "off"
                 return
 
-            print(f"[PyTorch] Applying torch.compile (JIT compilation on first inference)...")
+            mode = self.torch_compile
+            mode_desc = {
+                "default": "Inductor",
+                "reduce-overhead": "CUDA Graphs",
+                "max-autotune": "Max Autotune",
+            }.get(mode, mode)
 
-            # Use reduce-overhead mode which enables CUDA graphs for lower latency
-            # - dynamic=False: We use fixed tile sizes, so specialize for static shapes
-            # - fullgraph=False: Allow graph breaks for model compatibility
-            # - mode="reduce-overhead": Enables CUDA graphs for reduced kernel launch overhead
+            print(f"[PyTorch] Applying torch.compile mode={mode} ({mode_desc})...")
+
+            # Available modes:
+            # - "default": Inductor backend with Triton kernels (~10-30% faster)
+            # - "reduce-overhead": Uses CUDA graphs (~20-40% faster, may fail on some models)
+            # - "max-autotune": Tries all kernel variants (slowest compile, fastest inference)
             #
-            # Note: CUDA graphs require static input shapes. If tile size changes,
-            # the model will recompile for that shape (cached for future use).
+            # Note: CUDA graphs (reduce-overhead) require static input shapes.
+            # If tile size changes, the model will recompile for that shape.
             self._compiled_model = torch.compile(
                 self.model,
-                mode="reduce-overhead",  # Uses CUDA graphs
+                mode=mode,
                 fullgraph=False,  # Allow graph breaks for compatibility
                 dynamic=False,  # Static shapes for maximum optimization
             )
@@ -263,7 +277,7 @@ class PyTorchEngine:
         except Exception as e:
             print(f"[PyTorch] Warning: torch.compile failed: {e}")
             print(f"[PyTorch] Falling back to eager mode")
-            self.torch_compile = False
+            self.torch_compile = "off"
             self._compiled_model = None
             self._needs_warmup = False
 
@@ -279,7 +293,7 @@ class PyTorchEngine:
             tile_width: Width of tiles that will be processed
             channels: Number of input channels (default 3 for RGB)
         """
-        if not self.torch_compile or self._compiled_model is None:
+        if self.torch_compile == "off" or self._compiled_model is None:
             return
 
         if not self._needs_warmup:
@@ -372,7 +386,7 @@ class PyTorchEngine:
         print(f"[PyTorch] Model loaded on {self.device}")
 
         # Apply torch.compile if enabled (must be after model is on device)
-        if self.torch_compile:
+        if self.torch_compile != "off":
             self._apply_torch_compile()
 
     def _setup_ramtorch(self):
@@ -410,7 +424,7 @@ class PyTorchEngine:
         # Apply torch.compile if enabled
         # Note: torch.compile with reduce-overhead/CUDA graphs may have limited benefit
         # with RamTorch since layer weights are dynamically transferred
-        if self.torch_compile:
+        if self.torch_compile != "off":
             self._apply_torch_compile()
 
     def _setup_manual_offloading(self):
