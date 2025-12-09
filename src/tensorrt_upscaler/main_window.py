@@ -77,6 +77,7 @@ from .gui import UpscaleWorker, ClipboardWorker, DropLineEdit, ThumbnailLabel
 from .dialogs import (
     CustomResolutionDialog,
     PyTorchOptionsDialog,
+    TensorRTOptionsDialog,
     WebImageDialog,
     AnimatedOutputDialog,
     PngOptionsDialog,
@@ -307,6 +308,9 @@ class MainWindow(QMainWindow):
         self._btn_model_queue = QPushButton("Queue")
         self._btn_model_queue.setToolTip("Configure model queue (process with multiple models)")
         self._btn_model_queue.setFixedWidth(70)
+        self._btn_trt_options = QPushButton("Options...")
+        self._btn_trt_options.setToolTip("Configure TensorRT precision and optimization settings")
+        self._btn_trt_options.setFixedWidth(80)
         self._upscale_check = QCheckBox("Upscale")
         self._upscale_check.setChecked(True)
         self._upscale_check.setToolTip("Enable SR upscaling. When disabled, only applies resolution/alpha processing.")
@@ -456,7 +460,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(hint, row, 0, 1, 4)
         row += 1
 
-        # ONNX row with Recent and Queue buttons (for TensorRT/DirectML)
+        # ONNX row with Recent, Queue, and Options buttons (for TensorRT/DirectML)
         self._onnx_label = QLabel("ONNX Model:")
         main_layout.addWidget(self._onnx_label, row, 0)
         main_layout.addWidget(self.onnx_edit, row, 1)
@@ -465,6 +469,7 @@ class MainWindow(QMainWindow):
         onnx_btn_layout.addWidget(self._btn_onnx)
         onnx_btn_layout.addWidget(self._btn_recent_onnx)
         onnx_btn_layout.addWidget(self._btn_model_queue)
+        onnx_btn_layout.addWidget(self._btn_trt_options)
         self._onnx_btn_container = QWidget()
         self._onnx_btn_container.setLayout(onnx_btn_layout)
         main_layout.addWidget(self._onnx_btn_container, row, 2)
@@ -639,6 +644,7 @@ class MainWindow(QMainWindow):
         self._btn_onnx.clicked.connect(self._browse_onnx)
         self._btn_recent_onnx.clicked.connect(self._show_recent_onnx)
         self._btn_model_queue.clicked.connect(self._open_model_queue_dialog)
+        self._btn_trt_options.clicked.connect(self._open_tensorrt_options_dialog)
         self._btn_pytorch.clicked.connect(self._browse_pytorch)
         self._btn_recent_pytorch.clicked.connect(self._show_recent_pytorch)
         self._pytorch_options_btn.clicked.connect(self._open_pytorch_options_dialog)
@@ -694,6 +700,11 @@ class MainWindow(QMainWindow):
         dialog = PyTorchOptionsDialog(self, config=self.config)
         dialog.exec()
 
+    def _open_tensorrt_options_dialog(self):
+        """Open the TensorRT options dialog."""
+        dialog = TensorRTOptionsDialog(self, config=self.config)
+        dialog.exec()
+
     def _update_sharpen_button_text(self):
         """Update sharpen button text based on current config."""
         cfg = get_config()
@@ -722,11 +733,15 @@ class MainWindow(QMainWindow):
     def _on_backend_changed(self, backend_text: str):
         """Handle backend dropdown change - show/hide PyTorch vs ONNX options."""
         is_pytorch = backend_text == "PyTorch"
+        is_tensorrt = backend_text == "TensorRT"
 
         # Show/hide ONNX widgets
         self._onnx_label.setVisible(not is_pytorch)
         self.onnx_edit.setVisible(not is_pytorch)
         self._onnx_btn_container.setVisible(not is_pytorch)
+
+        # TensorRT Options button only for TensorRT backend
+        self._btn_trt_options.setVisible(is_tensorrt)
 
         # Show/hide PyTorch widgets
         self._pytorch_label.setVisible(is_pytorch)
@@ -736,8 +751,8 @@ class MainWindow(QMainWindow):
 
         # Show/hide TensorRT-specific precision options
         # BF16 and TF32 are TensorRT-only
-        self._bf16_check.setVisible(not is_pytorch)
-        self._tf32_check.setVisible(not is_pytorch)
+        self._bf16_check.setVisible(is_tensorrt)
+        self._tf32_check.setVisible(is_tensorrt)
         # FP16 for TensorRT/DirectML, PyTorch has its own checkbox
         self._fp16_check.setVisible(not is_pytorch)
 

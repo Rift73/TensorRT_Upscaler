@@ -69,6 +69,9 @@ class UpscaleWorker(QThread):
                     tf32=cfg.use_tf32,
                     backend=cfg.backend,
                     disable_tile_limit=cfg.disable_tile_limit,
+                    # TensorRT-specific options
+                    trt_cuda_graphs=getattr(cfg, 'trt_cuda_graphs', False),
+                    trt_builder_optimization=getattr(cfg, 'trt_builder_optimization', 5),
                     # PyTorch-specific options
                     pytorch_model_path=getattr(cfg, 'pytorch_model_path', ''),
                     pytorch_device=getattr(cfg, 'pytorch_device', 'cuda'),
@@ -309,6 +312,9 @@ class ClipboardWorker(QThread):
                 tf32=cfg.use_tf32,
                 backend=cfg.backend,
                 disable_tile_limit=cfg.disable_tile_limit,
+                # TensorRT-specific options
+                trt_cuda_graphs=getattr(cfg, 'trt_cuda_graphs', False),
+                trt_builder_optimization=getattr(cfg, 'trt_builder_optimization', 5),
                 # PyTorch-specific options
                 pytorch_model_path=getattr(cfg, 'pytorch_model_path', ''),
                 pytorch_device=getattr(cfg, 'pytorch_device', 'cuda'),

@@ -118,6 +118,9 @@ class ImageUpscaler:
         tf32: bool = False,
         backend: str = "tensorrt",
         disable_tile_limit: bool = False,
+        # TensorRT-specific options
+        trt_cuda_graphs: bool = False,
+        trt_builder_optimization: int = 5,
         # PyTorch-specific options
         pytorch_model_path: str = "",
         pytorch_device: str = "cuda",
@@ -142,6 +145,8 @@ class ImageUpscaler:
             tf32: Enable TF32 precision (TensorRT only)
             backend: "tensorrt", "directml", or "pytorch"
             disable_tile_limit: When True, skip tile alignment to 64 and padding
+            trt_cuda_graphs: Enable CUDA graphs for TensorRT (reduced kernel overhead)
+            trt_builder_optimization: Builder optimization level 0-5 (higher = slower build, faster run)
             pytorch_model_path: Path to .pth/.safetensors model (for PyTorch)
             pytorch_device: Device for PyTorch ("cuda", "cpu")
             pytorch_half: Use FP16 for PyTorch
@@ -205,6 +210,8 @@ class ImageUpscaler:
                 min_shape=min_shape,
                 opt_shape=opt_shape,
                 max_shape=max_shape,
+                cuda_graphs=trt_cuda_graphs,
+                builder_optimization_level=trt_builder_optimization,
             )
 
         self.scale = self.engine.model_scale

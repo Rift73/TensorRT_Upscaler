@@ -28,6 +28,9 @@ class Config:
     use_tf32: bool = False
     backend: str = "tensorrt"  # tensorrt, directml, or pytorch
     disable_tile_limit: bool = False  # Disable 64-alignment requirement for tiles
+    # TensorRT optimization settings
+    trt_cuda_graphs: bool = False  # Use CUDA graphs for reduced kernel launch overhead
+    trt_builder_optimization: int = 5  # Builder optimization level (0-5, higher = slower build, faster inference)
 
     # PyTorch backend settings
     pytorch_model_path: str = ""

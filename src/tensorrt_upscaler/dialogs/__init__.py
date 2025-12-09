@@ -15,6 +15,9 @@ from .resolution import CustomResolutionDialog
 # Re-export from pytorch_options.py
 from .pytorch_options import PyTorchOptionsDialog
 
+# Re-export from tensorrt_options.py
+from .tensorrt_options import TensorRTOptionsDialog
+
 # Re-export from web_image_dialog.py
 from .web_image_dialog import WebImageDialog
 
@@ -35,6 +38,7 @@ from ..dialogs_legacy import (
 __all__ = [
     "CustomResolutionDialog",
     "PyTorchOptionsDialog",
+    "TensorRTOptionsDialog",
     "WebImageDialog",
     "AnimatedOutputDialog",
     "PngOptionsDialog",

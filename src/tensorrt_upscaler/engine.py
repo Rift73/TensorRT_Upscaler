@@ -8,11 +8,11 @@ Precision modes:
 - TF32: Tensor Float 32 mode
 
 TensorRT optimizations (MAXED OUT):
-- Builder optimization level 5 (maximum tactics exploration)
+- Builder optimization level configurable (0-5, default 5 for maximum tactics)
 - 100GB workspace memory (practically unlimited)
 - All tactic sources enabled (cuBLAS, cuBLASLt, cuDNN, EdgeMask, JIT)
 - Hardware compatibility NONE (optimized for current GPU only)
-- CUDA graphs DISABLED (Myelin backend doesn't support capture)
+- CUDA graphs optional (reduces kernel launch overhead, may not work on all models)
 - Precision constraints preferred
 - Direct I/O enabled
 - Sparse weights optimization enabled
@@ -99,6 +99,8 @@ class TensorRTEngine:
         min_shape: tuple = (1, 3, 64, 64),
         opt_shape: tuple = (1, 3, 512, 512),
         max_shape: tuple = (1, 3, 1920, 1088),
+        cuda_graphs: bool = False,
+        builder_optimization_level: int = 5,
     ):
         """
         Initialize TensorRT engine from ONNX model.
@@ -111,6 +113,8 @@ class TensorRTEngine:
             min_shape: Minimum input shape (N, C, H, W)
             opt_shape: Optimal input shape for engine tuning
             max_shape: Maximum input shape
+            cuda_graphs: Enable CUDA graphs for reduced kernel launch overhead
+            builder_optimization_level: Builder optimization level (0-5)
         """
         self.onnx_path = onnx_path
         self.fp16 = fp16
@@ -119,6 +123,8 @@ class TensorRTEngine:
         self.min_shape = min_shape
         self.opt_shape = opt_shape
         self.max_shape = max_shape
+        self.cuda_graphs = cuda_graphs
+        self.builder_optimization_level = max(0, min(5, builder_optimization_level))
 
         self.engine = None
         self.context = None
@@ -145,6 +151,12 @@ class TensorRTEngine:
 
         # Thread pool for async output processing
         self._executor = ThreadPoolExecutor(max_workers=2)
+
+        # CUDA graph resources (for cuda_graphs mode)
+        self._cuda_graph = None
+        self._cuda_graph_exec = None
+        self._cuda_graph_captured = False
+        self._cuda_graph_input_shape = None
 
         self._detect_model_scale()
         self._build_or_load_engine()
@@ -179,7 +191,9 @@ class TensorRTEngine:
         else:
             precision = "fp32"
         shape_str = f"{self.max_shape[3]}x{self.max_shape[2]}"
-        return f"{base}_{precision}_{shape_str}.trt"
+        opt_level = f"opt{self.builder_optimization_level}"
+        cg_suffix = "_cg" if self.cuda_graphs else ""
+        return f"{base}_{precision}_{shape_str}_{opt_level}{cg_suffix}.trt"
 
     def _build_or_load_engine(self):
         """Build TensorRT engine from ONNX or load from cache."""
@@ -222,14 +236,16 @@ class TensorRTEngine:
 
         config = builder.create_builder_config()
 
-        # === MAXED OUT SETTINGS ===
+        # === OPTIMIZATION SETTINGS ===
 
-        # Builder optimization level 5 (maximum) - TensorRT 8.6+
-        # Level 5 = longest build time but best runtime performance
-        # Tries more tactics and kernel options
+        # Builder optimization level (0-5) - TensorRT 8.6+
+        # Higher = longer build time but better runtime performance
+        # Level 0: Fastest build, basic optimization
+        # Level 5: Slowest build, maximum optimization (tries all tactics)
         if hasattr(config, 'builder_optimization_level'):
-            config.builder_optimization_level = 5
-            print("Builder optimization level: 5 (MAXIMUM)")
+            config.builder_optimization_level = self.builder_optimization_level
+            level_desc = {0: "FASTEST", 1: "FAST", 2: "NORMAL", 3: "GOOD", 4: "BETTER", 5: "MAXIMUM"}
+            print(f"Builder optimization level: {self.builder_optimization_level} ({level_desc.get(self.builder_optimization_level, 'CUSTOM')})")
 
         # Set massive workspace - practically unlimited (100GB)
         # TensorRT will only use what it needs, this just removes the limit
@@ -288,6 +304,16 @@ class TensorRTEngine:
         if hasattr(trt.BuilderFlag, 'SPARSE_WEIGHTS'):
             config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
             print("Enabled: SPARSE_WEIGHTS")
+
+        # CUDA graphs for reduced kernel launch overhead
+        # Uses internal TensorRT CUDA graph optimization, not stream capture
+        if self.cuda_graphs:
+            # TensorRT 8.6+ has CUDA_GRAPH_EXEC flag
+            if hasattr(trt.BuilderFlag, 'CUDA_GRAPH_EXEC'):
+                config.set_flag(trt.BuilderFlag.CUDA_GRAPH_EXEC)
+                print("Enabled: CUDA_GRAPH_EXEC (internal CUDA graphs)")
+            else:
+                print("Warning: CUDA_GRAPH_EXEC not available in this TensorRT version")
 
         # Set precision flags
         if self.bf16 and hasattr(trt.BuilderFlag, 'BF16') and builder.platform_has_fast_fp16:
