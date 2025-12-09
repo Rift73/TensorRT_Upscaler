@@ -2110,6 +2110,10 @@ class MainWindow(QMainWindow):
         watch_shortcut = QShortcut(QKeySequence("Ctrl+W"), self)
         watch_shortcut.activated.connect(self._toggle_watch_folder)
 
+        # Ctrl+V - Paste image from clipboard (global shortcut)
+        paste_shortcut = QShortcut(QKeySequence("Ctrl+V"), self)
+        paste_shortcut.activated.connect(self._handle_clipboard_paste)
+
         # Delete - Remove selected files from list
         delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self)
         delete_shortcut.activated.connect(self._remove_selected_files)
