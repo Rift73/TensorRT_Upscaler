@@ -407,6 +407,12 @@ class PyTorchEngine:
         precision = "BF16" if self.bf16 else ("FP16" if self.half else "FP32")
         print(f"[PyTorch] RamTorch offloading enabled (target: {target_device}, {precision} via autocast)")
 
+        # Apply torch.compile if enabled
+        # Note: torch.compile with reduce-overhead/CUDA graphs may have limited benefit
+        # with RamTorch since layer weights are dynamically transferred
+        if self.torch_compile:
+            self._apply_torch_compile()
+
     def _setup_manual_offloading(self):
         """Manual offloading - keep model on CPU, move to GPU per-tile."""
         print(f"[PyTorch] Using manual CPU offloading (per-tile transfer)")
