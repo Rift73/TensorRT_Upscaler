@@ -330,8 +330,25 @@ class PyTorchEngine:
             print(f"[PyTorch] Warmup complete - model compiled for shape ({tile_height}, {tile_width})")
 
         except Exception as e:
-            print(f"[PyTorch] Warning: Warmup failed: {e}")
-            print(f"[PyTorch] First inference will trigger compilation instead")
+            error_msg = str(e)
+            # Check for common compilation errors
+            if "cl is not found" in error_msg or "Compiler" in error_msg:
+                print(f"[PyTorch] Warning: torch.compile requires MSVC compiler (cl.exe)")
+                print(f"[PyTorch] Install Visual Studio Build Tools or disable torch.compile")
+                print(f"[PyTorch] Falling back to eager mode")
+                self.torch_compile = "off"
+                self._compiled_model = None
+                self._needs_warmup = False
+            elif "Python int too large" in error_msg or "OverflowError" in error_msg:
+                print(f"[PyTorch] Warning: torch.compile failed due to model incompatibility")
+                print(f"[PyTorch] Try using 'Default (Inductor)' mode instead of CUDA Graphs")
+                print(f"[PyTorch] Falling back to eager mode")
+                self.torch_compile = "off"
+                self._compiled_model = None
+                self._needs_warmup = False
+            else:
+                print(f"[PyTorch] Warning: Warmup failed: {e}")
+                print(f"[PyTorch] First inference will trigger compilation instead")
 
     def _load_model(self):
         """Load model using spandrel."""
@@ -511,12 +528,34 @@ class PyTorchEngine:
         model_to_run = self._compiled_model if self._compiled_model is not None else self.model
 
         # Run with autocast for BF16/FP16 (handles mixed precision properly)
-        if torch.cuda.is_available() and self.device != "cpu" and (self.half or self.bf16):
-            autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
-            with torch.amp.autocast('cuda', dtype=autocast_dtype):
+        try:
+            if torch.cuda.is_available() and self.device != "cpu" and (self.half or self.bf16):
+                autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
+                with torch.amp.autocast('cuda', dtype=autocast_dtype):
+                    output_tensor = model_to_run(input_tensor)
+            else:
                 output_tensor = model_to_run(input_tensor)
-        else:
-            output_tensor = model_to_run(input_tensor)
+        except Exception as e:
+            error_msg = str(e)
+            # Handle torch.compile failures during inference
+            if self._compiled_model is not None and (
+                "cl is not found" in error_msg or
+                "Compiler" in error_msg or
+                "Python int too large" in error_msg or
+                "InductorError" in str(type(e).__name__)
+            ):
+                print(f"[PyTorch] torch.compile failed during inference, falling back to eager mode")
+                self.torch_compile = "off"
+                self._compiled_model = None
+                # Retry with regular model
+                if torch.cuda.is_available() and self.device != "cpu" and (self.half or self.bf16):
+                    autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
+                    with torch.amp.autocast('cuda', dtype=autocast_dtype):
+                        output_tensor = self.model(input_tensor)
+                else:
+                    output_tensor = self.model(input_tensor)
+            else:
+                raise
 
         return output_tensor
 
