@@ -234,8 +234,15 @@ class PyTorchEngine:
             print(f"[PyTorch] Backend settings: {', '.join(settings_applied)}")
 
     def _apply_torch_compile(self):
-        """Apply torch.compile to the model for optimized inference."""
+        """Apply torch.compile or jit.trace to the model for optimized inference."""
         if self.torch_compile == "off":
+            return
+
+        # Handle JIT trace separately (doesn't require torch.compile)
+        if self.torch_compile == "jit-trace":
+            # JIT trace is applied during warmup since it needs an input tensor
+            self._needs_warmup = True
+            print(f"[PyTorch] JIT Trace enabled (will trace on first inference)")
             return
 
         try:
@@ -281,6 +288,52 @@ class PyTorchEngine:
             self._compiled_model = None
             self._needs_warmup = False
 
+    def _apply_jit_trace(self, dummy_input: "torch.Tensor", tile_height: int, tile_width: int):
+        """
+        Apply torch.jit.trace to the model for optimized inference.
+
+        JIT trace records the operations executed during a forward pass and
+        creates a TorchScript graph. This is faster than torch.compile and
+        doesn't require an external compiler (no MSVC needed on Windows).
+
+        Args:
+            dummy_input: Sample input tensor for tracing
+            tile_height: Height of the input tile
+            tile_width: Width of the input tile
+        """
+        print(f"[PyTorch] Tracing model with JIT for shape ({tile_height}, {tile_width})...")
+
+        try:
+            # JIT trace requires the model to be in eval mode
+            self.model.eval()
+
+            # Trace the model with the dummy input
+            # We use torch.no_grad() since we're doing inference
+            with torch.no_grad():
+                if self.half or self.bf16:
+                    autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
+                    with torch.amp.autocast('cuda', dtype=autocast_dtype):
+                        self._compiled_model = torch.jit.trace(self.model, dummy_input)
+                else:
+                    self._compiled_model = torch.jit.trace(self.model, dummy_input)
+
+            # Optimize the traced model for inference
+            self._compiled_model = torch.jit.optimize_for_inference(self._compiled_model)
+
+            # Sync to ensure tracing is complete
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            self._needs_warmup = False
+            print(f"[PyTorch] JIT Trace complete - model traced for shape ({tile_height}, {tile_width})")
+
+        except Exception as e:
+            print(f"[PyTorch] Warning: JIT Trace failed: {e}")
+            print(f"[PyTorch] Falling back to eager mode")
+            self.torch_compile = "off"
+            self._compiled_model = None
+            self._needs_warmup = False
+
     def warmup_compiled_model(self, tile_height: int, tile_width: int, channels: int = 3):
         """
         Warmup the compiled model by running inference on a dummy input.
@@ -293,26 +346,35 @@ class PyTorchEngine:
             tile_width: Width of tiles that will be processed
             channels: Number of input channels (default 3 for RGB)
         """
-        if self.torch_compile == "off" or self._compiled_model is None:
+        if self.torch_compile == "off":
             return
 
         if not self._needs_warmup:
             return
 
+        # Create dummy input matching expected tile shape
+        dummy_input = torch.zeros(
+            1, channels, tile_height, tile_width,
+            dtype=torch.float32,
+            device=self.device
+        )
+
+        # Apply channels_last if enabled
+        if self.channels_last:
+            dummy_input = dummy_input.to(memory_format=torch.channels_last)
+
+        # Handle JIT trace
+        if self.torch_compile == "jit-trace":
+            self._apply_jit_trace(dummy_input, tile_height, tile_width)
+            return
+
+        # torch.compile warmup
+        if self._compiled_model is None:
+            return
+
         print(f"[PyTorch] Warming up compiled model for shape ({tile_height}, {tile_width})...")
 
         try:
-            # Create dummy input matching expected tile shape
-            dummy_input = torch.zeros(
-                1, channels, tile_height, tile_width,
-                dtype=torch.float32,
-                device=self.device
-            )
-
-            # Apply channels_last if enabled
-            if self.channels_last:
-                dummy_input = dummy_input.to(memory_format=torch.channels_last)
-
             # Run warmup inference (this triggers actual compilation)
             with torch.inference_mode():
                 if self.half or self.bf16:

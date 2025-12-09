@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt
 # torch.compile modes with descriptions
 TORCH_COMPILE_MODES = [
     ("off", "Off"),
+    ("jit-trace", "JIT Trace (No compiler needed)"),
     ("default", "Default (Inductor)"),
     ("reduce-overhead", "Reduce Overhead (CUDA Graphs)"),
     ("max-autotune", "Max Autotune"),
@@ -102,13 +103,14 @@ class PyTorchOptionsDialog(QDialog):
         for mode_id, mode_name in TORCH_COMPILE_MODES:
             self._torch_compile_combo.addItem(mode_name, mode_id)
         self._torch_compile_combo.setToolTip(
-            "JIT compile the model for optimized inference (PyTorch 2.0+).\n\n"
+            "JIT compile the model for optimized inference.\n\n"
             "• Off: No compilation (default, most compatible)\n"
-            "• Default: Inductor backend with Triton kernels (~10-30% faster)\n"
-            "• Reduce Overhead: Uses CUDA Graphs (~20-40% faster, may fail on some models)\n"
-            "• Max Autotune: Tries all kernel variants (slowest compile, fastest inference)\n\n"
-            "All modes have slow first batch (~30-60s) for JIT compilation.\n"
-            "Best for: batch processing many images with consistent tile size."
+            "• JIT Trace: TorchScript tracing (no MSVC needed, fast compile, ~5-15% faster)\n"
+            "• Default: Inductor backend with Triton (requires MSVC, ~10-30% faster)\n"
+            "• Reduce Overhead: CUDA Graphs (requires MSVC, ~20-40% faster, may fail)\n"
+            "• Max Autotune: All kernel variants (requires MSVC, slowest compile)\n\n"
+            "JIT Trace: Fast warmup (~1-2s), works on any PyTorch version.\n"
+            "Other modes: Slow warmup (~30-60s), require PyTorch 2.0+ and MSVC compiler."
         )
         compile_row.addWidget(self._torch_compile_combo)
         compile_row.addStretch()
