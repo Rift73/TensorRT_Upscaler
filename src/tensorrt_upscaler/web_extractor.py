@@ -212,36 +212,59 @@ class WebImageExtractor:
         height = page.evaluate("document.body.scrollHeight")
         viewport_height = page.evaluate("window.innerHeight")
 
-        # Scroll in chunks
+        # Scroll in chunks - slower scrolling for better lazy load triggering
         current = 0
-        while current < height:
+        max_scrolls = 50  # Safety limit
+        scroll_count = 0
+        while current < height and scroll_count < max_scrolls:
             page.evaluate(f"window.scrollTo(0, {current})")
-            page.wait_for_timeout(200)
-            current += viewport_height
+            page.wait_for_timeout(300)  # Longer wait for lazy loaders
+            current += viewport_height // 2  # Smaller steps for better coverage
+            scroll_count += 1
             # Re-check height (might have grown due to lazy loading)
             height = page.evaluate("document.body.scrollHeight")
 
         # Scroll back to top
         page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(500)
 
     def _extract_images_from_page(self, page: "Page", base_url: str) -> List[ExtractedImage]:
         """Extract image information from the page."""
         images = []
         seen_urls = set()
 
+        # Common lazy-load data attributes
+        lazy_attrs = [
+            "data-src", "data-lazy-src", "data-original", "data-url",
+            "data-image", "data-full", "data-highres", "data-srcset",
+            "data-lazy", "data-echo", "data-lazyload", "data-source",
+        ]
+
         # Get all img elements
         img_elements = page.query_selector_all("img")
 
         for img in img_elements:
             try:
-                # Get src (prefer data-src for lazy loaded images)
-                src = img.get_attribute("data-src") or img.get_attribute("src")
-                if not src:
+                # Try multiple src attributes (lazy loading patterns)
+                src = None
+                for attr in lazy_attrs:
+                    src = img.get_attribute(attr)
+                    if src and not src.startswith(("data:", "blob:")):
+                        break
+
+                # Fall back to regular src
+                if not src or src.startswith(("data:", "blob:")):
+                    src = img.get_attribute("src")
+
+                if not src or src.startswith(("data:", "blob:")):
                     continue
 
-                # Skip data: URLs and blob: URLs
-                if src.startswith(("data:", "blob:")):
-                    continue
+                # Handle srcset - get highest resolution
+                srcset = img.get_attribute("srcset")
+                if srcset:
+                    best_src = self._parse_srcset(srcset)
+                    if best_src:
+                        src = best_src
 
                 # Make absolute URL
                 src = urljoin(base_url, src)
@@ -251,15 +274,37 @@ class WebImageExtractor:
                     continue
                 seen_urls.add(src)
 
-                # Get dimensions
-                box = img.bounding_box()
-                if box:
-                    width = int(box["width"])
-                    height = int(box["height"])
-                else:
-                    # Try natural dimensions
+                # Get dimensions - try multiple methods
+                width, height = 0, 0
+
+                # Method 1: Natural dimensions (actual image size)
+                try:
                     width = img.evaluate("el => el.naturalWidth") or 0
                     height = img.evaluate("el => el.naturalHeight") or 0
+                except Exception:
+                    pass
+
+                # Method 2: Bounding box (rendered size)
+                if width == 0 or height == 0:
+                    try:
+                        box = img.bounding_box()
+                        if box:
+                            width = int(box["width"])
+                            height = int(box["height"])
+                    except Exception:
+                        pass
+
+                # Method 3: Attributes
+                if width == 0 or height == 0:
+                    try:
+                        width = int(img.get_attribute("width") or 0)
+                        height = int(img.get_attribute("height") or 0)
+                    except Exception:
+                        pass
+
+                # If still no dimensions, assume it might be large (include it)
+                if width == 0 and height == 0:
+                    width, height = 1000, 1000  # Placeholder
 
                 # Filter small images
                 if width < self.MIN_WIDTH or height < self.MIN_HEIGHT:
@@ -277,6 +322,23 @@ class WebImageExtractor:
 
             except Exception as e:
                 # Skip problematic images
+                continue
+
+        # Also extract from picture/source elements
+        source_elements = page.query_selector_all("picture source, source[type*='image']")
+        for source in source_elements:
+            try:
+                srcset = source.get_attribute("srcset") or source.get_attribute("src")
+                if srcset:
+                    src = self._parse_srcset(srcset) or srcset.split(",")[0].split()[0]
+                    if src and not src.startswith(("data:", "blob:")):
+                        src = urljoin(base_url, src)
+                        if src not in seen_urls:
+                            seen_urls.add(src)
+                            images.append(ExtractedImage(
+                                url=src, width=1000, height=1000, alt=""
+                            ))
+            except Exception:
                 continue
 
         # Also check for background images in divs (common for manga readers)
@@ -316,6 +378,42 @@ class WebImageExtractor:
         images.sort(key=lambda x: x.width * x.height, reverse=True)
 
         return images
+
+    def _parse_srcset(self, srcset: str) -> Optional[str]:
+        """
+        Parse srcset attribute and return the highest resolution URL.
+
+        srcset format: "url1 1x, url2 2x" or "url1 100w, url2 200w"
+        """
+        try:
+            candidates = []
+            for part in srcset.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+
+                tokens = part.split()
+                if len(tokens) >= 1:
+                    url = tokens[0]
+                    # Get size descriptor
+                    size = 1
+                    if len(tokens) >= 2:
+                        desc = tokens[1].lower()
+                        if desc.endswith("w"):
+                            size = int(desc[:-1])
+                        elif desc.endswith("x"):
+                            size = int(float(desc[:-1]) * 1000)
+
+                    candidates.append((url, size))
+
+            if candidates:
+                # Return highest resolution
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                return candidates[0][0]
+        except Exception:
+            pass
+
+        return None
 
     def download_image(
         self,

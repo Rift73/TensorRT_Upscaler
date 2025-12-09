@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSystemTrayIcon,
     QStyle,
+    QDialog,
 )
 
 from .config import get_config, save_config
