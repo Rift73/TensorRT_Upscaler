@@ -73,7 +73,24 @@ class PyTorchOptionsDialog(QDialog):
             "Faster for CNN models on modern GPUs with tensor cores."
         )
 
+        self._cudnn_benchmark_check = QCheckBox("cuDNN Auto-Tune")
+        self._cudnn_benchmark_check.setToolTip(
+            "Enable cuDNN benchmark mode to find optimal convolution algorithms.\n"
+            "Slower first inference (benchmarking), faster subsequent inferences.\n"
+            "Recommended: ON for batch processing, OFF for single images."
+        )
+
+        self._torch_compile_check = QCheckBox("torch.compile")
+        self._torch_compile_check.setToolTip(
+            "JIT compile the model for optimized inference.\n"
+            "Significantly slower first run (compilation), ~20-40% faster subsequent runs.\n"
+            "Uses CUDA Graphs to reduce CPU overhead.\n"
+            "Best for: batch processing many images with same tile size."
+        )
+
         optim_layout.addWidget(self._channels_last_check, 0, 0)
+        optim_layout.addWidget(self._cudnn_benchmark_check, 0, 1)
+        optim_layout.addWidget(self._torch_compile_check, 1, 0)
 
         layout.addWidget(optim_group)
 
@@ -115,6 +132,8 @@ class PyTorchOptionsDialog(QDialog):
         self._bf16_check.setChecked(self.config.pytorch_bf16)
         self._tf32_check.setChecked(self.config.pytorch_enable_tf32)
         self._channels_last_check.setChecked(self.config.pytorch_channels_last)
+        self._cudnn_benchmark_check.setChecked(getattr(self.config, 'pytorch_cudnn_benchmark', True))
+        self._torch_compile_check.setChecked(getattr(self.config, 'pytorch_torch_compile', False))
 
     def _save_to_config(self):
         """Save settings to config."""
@@ -125,6 +144,8 @@ class PyTorchOptionsDialog(QDialog):
         self.config.pytorch_bf16 = self._bf16_check.isChecked()
         self.config.pytorch_enable_tf32 = self._tf32_check.isChecked()
         self.config.pytorch_channels_last = self._channels_last_check.isChecked()
+        self.config.pytorch_cudnn_benchmark = self._cudnn_benchmark_check.isChecked()
+        self.config.pytorch_torch_compile = self._torch_compile_check.isChecked()
 
     def _restore_defaults(self):
         """Restore default settings."""
@@ -132,6 +153,8 @@ class PyTorchOptionsDialog(QDialog):
         self._bf16_check.setChecked(True)
         self._tf32_check.setChecked(True)
         self._channels_last_check.setChecked(True)
+        self._cudnn_benchmark_check.setChecked(True)
+        self._torch_compile_check.setChecked(False)
 
     def _on_ok(self):
         """Save and close."""
@@ -145,4 +168,6 @@ class PyTorchOptionsDialog(QDialog):
             "pytorch_bf16": self._bf16_check.isChecked(),
             "pytorch_enable_tf32": self._tf32_check.isChecked(),
             "pytorch_channels_last": self._channels_last_check.isChecked(),
+            "pytorch_cudnn_benchmark": self._cudnn_benchmark_check.isChecked(),
+            "pytorch_torch_compile": self._torch_compile_check.isChecked(),
         }

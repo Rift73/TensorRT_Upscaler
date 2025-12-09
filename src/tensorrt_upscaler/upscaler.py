@@ -127,6 +127,8 @@ class ImageUpscaler:
         # PyTorch optimization options
         pytorch_enable_tf32: bool = True,
         pytorch_channels_last: bool = True,
+        pytorch_cudnn_benchmark: bool = True,
+        pytorch_torch_compile: bool = False,
     ):
         """
         Initialize upscaler with TensorRT, DirectML, or PyTorch engine.
@@ -147,6 +149,8 @@ class ImageUpscaler:
             pytorch_vram_mode: VRAM mode for PyTorch ("normal", "auto", "low_vram")
             pytorch_enable_tf32: Enable TF32 for matmuls/convolutions (Ampere+)
             pytorch_channels_last: Use NHWC memory format (faster for CNNs)
+            pytorch_cudnn_benchmark: Enable cuDNN benchmark for optimal conv algorithms
+            pytorch_torch_compile: Enable torch.compile JIT compilation
         """
         self.tile_w, self.tile_h = tile_size
         self.overlap = overlap
@@ -173,6 +177,8 @@ class ImageUpscaler:
                 vram_mode=pytorch_vram_mode,
                 enable_tf32=pytorch_enable_tf32,
                 channels_last=pytorch_channels_last,
+                cudnn_benchmark=pytorch_cudnn_benchmark,
+                torch_compile=pytorch_torch_compile,
             )
         elif backend == "directml":
             if not is_directml_available():
@@ -593,6 +599,8 @@ def upscale_file(
     # PyTorch optimization options
     pytorch_enable_tf32: bool = True,
     pytorch_channels_last: bool = True,
+    pytorch_cudnn_benchmark: bool = True,
+    pytorch_torch_compile: bool = False,
 ) -> bool:
     """
     Convenience function to upscale an image file.
@@ -616,6 +624,8 @@ def upscale_file(
         pytorch_vram_mode: VRAM mode for PyTorch ("normal", "auto", "low_vram")
         pytorch_enable_tf32: Enable TF32 for matmuls/convolutions (Ampere+)
         pytorch_channels_last: Use NHWC memory format (faster for CNNs)
+        pytorch_cudnn_benchmark: Enable cuDNN benchmark for optimal conv algorithms
+        pytorch_torch_compile: Enable torch.compile JIT compilation
 
     Returns:
         True if successful
@@ -636,6 +646,8 @@ def upscale_file(
             pytorch_vram_mode=pytorch_vram_mode,
             pytorch_enable_tf32=pytorch_enable_tf32,
             pytorch_channels_last=pytorch_channels_last,
+            pytorch_cudnn_benchmark=pytorch_cudnn_benchmark,
+            pytorch_torch_compile=pytorch_torch_compile,
         )
 
         # Use fast I/O

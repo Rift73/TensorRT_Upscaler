@@ -18,6 +18,8 @@ VRAM modes:
 Optimization options:
 - TF32: Enable TensorFloat32 for matmuls/convolutions (Ampere+, ~2-3x faster)
 - channels_last: Use NHWC memory format (faster for CNNs on tensor cores)
+- cudnn_benchmark: Auto-tune cuDNN for optimal conv algorithms (slower first run)
+- torch_compile: JIT compile model with inductor backend (much slower first run, faster inference)
 - inference_mode: More aggressive than no_grad (faster)
 """
 
@@ -99,6 +101,8 @@ class PyTorchEngine:
         # Optimization options
         enable_tf32: bool = True,  # TensorFloat32 for matmuls/convolutions
         channels_last: bool = True,  # NHWC memory format
+        cudnn_benchmark: bool = True,  # cuDNN auto-tuner
+        torch_compile: bool = False,  # torch.compile JIT compilation
     ):
         """
         Initialize PyTorch engine from model file.
@@ -111,6 +115,8 @@ class PyTorchEngine:
             vram_mode: VRAM management mode (normal/auto/low_vram/ramtorch)
             enable_tf32: Enable TensorFloat32 for matmuls/convolutions (Ampere+)
             channels_last: Use NHWC memory format (faster for CNNs)
+            cudnn_benchmark: Enable cuDNN benchmark mode for optimal conv algorithms
+            torch_compile: Enable torch.compile JIT compilation (slower startup)
         """
         if not TORCH_AVAILABLE:
             raise RuntimeError(
@@ -140,6 +146,9 @@ class PyTorchEngine:
         # Optimization options
         self.enable_tf32 = enable_tf32 and device != "cpu"
         self.channels_last = channels_last and device != "cpu"
+        self.cudnn_benchmark = cudnn_benchmark and device != "cpu"
+        self.torch_compile = torch_compile and device != "cpu"
+        self._compiled_model = None  # Will hold compiled model if torch_compile is enabled
 
         # Check BF16 support
         if self.bf16:
@@ -209,8 +218,43 @@ class PyTorchEngine:
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
 
+        # cuDNN benchmark mode (auto-tune for optimal conv algorithms)
+        if self.cudnn_benchmark:
+            torch.backends.cudnn.benchmark = True
+            settings_applied.append("cuDNN benchmark")
+        else:
+            torch.backends.cudnn.benchmark = False
+
         if settings_applied:
             print(f"[PyTorch] Backend settings: {', '.join(settings_applied)}")
+
+    def _apply_torch_compile(self):
+        """Apply torch.compile to the model for optimized inference."""
+        try:
+            # Check PyTorch version (torch.compile requires 2.0+)
+            torch_version = tuple(map(int, torch.__version__.split('.')[:2]))
+            if torch_version < (2, 0):
+                print(f"[PyTorch] Warning: torch.compile requires PyTorch 2.0+, got {torch.__version__}")
+                self.torch_compile = False
+                return
+
+            print(f"[PyTorch] Compiling model with torch.compile (this may take a moment)...")
+
+            # Use reduce-overhead mode which enables CUDA graphs for lower latency
+            # This is best for repetitive inference with same input shapes (tiled upscaling)
+            self._compiled_model = torch.compile(
+                self.model,
+                mode="reduce-overhead",  # Uses CUDA graphs
+                fullgraph=False,  # Allow graph breaks for compatibility
+            )
+
+            print(f"[PyTorch] Model compiled (first inference will trigger JIT compilation)")
+
+        except Exception as e:
+            print(f"[PyTorch] Warning: torch.compile failed: {e}")
+            print(f"[PyTorch] Falling back to eager mode")
+            self.torch_compile = False
+            self._compiled_model = None
 
     def _load_model(self):
         """Load model using spandrel."""
@@ -263,6 +307,10 @@ class PyTorchEngine:
             print(f"[PyTorch] Using FP32 precision")
 
         print(f"[PyTorch] Model loaded on {self.device}")
+
+        # Apply torch.compile if enabled (must be after model is on device)
+        if self.torch_compile:
+            self._apply_torch_compile()
 
     def _setup_ramtorch(self):
         """Setup RamTorch layer-by-layer offloading."""
@@ -376,13 +424,16 @@ class PyTorchEngine:
         # Move input to device
         input_tensor = input_tensor.to(self.device)
 
+        # Use compiled model if available, otherwise use regular model
+        model_to_run = self._compiled_model if self._compiled_model is not None else self.model
+
         # Run with autocast for BF16/FP16 (handles mixed precision properly)
         if torch.cuda.is_available() and self.device != "cpu" and (self.half or self.bf16):
             autocast_dtype = torch.bfloat16 if self.bf16 else torch.float16
             with torch.amp.autocast('cuda', dtype=autocast_dtype):
-                output_tensor = self.model(input_tensor)
+                output_tensor = model_to_run(input_tensor)
         else:
-            output_tensor = self.model(input_tensor)
+            output_tensor = model_to_run(input_tensor)
 
         return output_tensor
 

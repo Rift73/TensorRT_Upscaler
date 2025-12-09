@@ -78,6 +78,8 @@ class UpscaleWorker(QThread):
                     # PyTorch optimization options
                     pytorch_enable_tf32=getattr(cfg, 'pytorch_enable_tf32', True),
                     pytorch_channels_last=getattr(cfg, 'pytorch_channels_last', True),
+                    pytorch_cudnn_benchmark=getattr(cfg, 'pytorch_cudnn_benchmark', True),
+                    pytorch_torch_compile=getattr(cfg, 'pytorch_torch_compile', False),
                 )
 
             # Setup async saver for background PNG writing
@@ -316,6 +318,8 @@ class ClipboardWorker(QThread):
                 # PyTorch optimization options
                 pytorch_enable_tf32=getattr(cfg, 'pytorch_enable_tf32', True),
                 pytorch_channels_last=getattr(cfg, 'pytorch_channels_last', True),
+                pytorch_cudnn_benchmark=getattr(cfg, 'pytorch_cudnn_benchmark', True),
+                pytorch_torch_compile=getattr(cfg, 'pytorch_torch_compile', False),
             )
 
             try:

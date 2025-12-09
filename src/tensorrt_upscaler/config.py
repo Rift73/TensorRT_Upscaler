@@ -40,6 +40,8 @@ class Config:
     # PyTorch optimization settings
     pytorch_enable_tf32: bool = True  # TensorFloat32 for matmuls/convolutions (Ampere+)
     pytorch_channels_last: bool = True  # NHWC memory format (faster for CNNs)
+    pytorch_cudnn_benchmark: bool = True  # cuDNN auto-tuner for optimal conv algorithms
+    pytorch_torch_compile: bool = False  # torch.compile JIT compilation (slower startup, faster inference)
 
     # Output filename options (#9-13)
     save_next_to_input: bool = False
