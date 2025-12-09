@@ -66,6 +66,7 @@ class UpscaleWorker(QThread):
                     overlap=cfg.tile_overlap,
                     fp16=cfg.use_fp16,
                     bf16=cfg.use_bf16,
+                    tf32=cfg.use_tf32,
                     backend=cfg.backend,
                     disable_tile_limit=cfg.disable_tile_limit,
                     # PyTorch-specific options
@@ -303,6 +304,7 @@ class ClipboardWorker(QThread):
                 overlap=cfg.tile_overlap,
                 fp16=cfg.use_fp16,
                 bf16=cfg.use_bf16,
+                tf32=cfg.use_tf32,
                 backend=cfg.backend,
                 disable_tile_limit=cfg.disable_tile_limit,
                 # PyTorch-specific options

@@ -85,6 +85,12 @@ def main():
     )
 
     parser.add_argument(
+        "--tf32",
+        action="store_true",
+        help="Use TF32 precision (faster than FP32, Ampere+ GPUs)"
+    )
+
+    parser.add_argument(
         "--suffix",
         default="_upscaled",
         help="Output filename suffix (default: _upscaled)"
@@ -139,8 +145,10 @@ def main():
 
     # Create upscaler
     bf16 = args.bf16 and not args.no_bf16
+    tf32 = getattr(args, 'tf32', False)
     print(f"Loading model: {args.model}")
-    print(f"Precision: {'FP16' if args.fp16 else ('BF16' if bf16 else 'FP32')}")
+    precision = 'FP16' if args.fp16 else ('BF16' if bf16 else ('TF32' if tf32 else 'FP32'))
+    print(f"Precision: {precision}")
     print(f"Tile size: {args.tile_width}x{args.tile_height}, overlap: {args.overlap}")
 
     upscaler = ImageUpscaler(
@@ -149,6 +157,7 @@ def main():
         overlap=args.overlap,
         fp16=args.fp16,
         bf16=bf16,
+        tf32=tf32,
     )
 
     animated_upscaler = AnimatedUpscaler(upscaler)

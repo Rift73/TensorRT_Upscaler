@@ -1971,6 +1971,7 @@ class ComparisonDialog(QDialog):
                         overlap=cfg.tile_overlap,
                         fp16=cfg.use_fp16,
                         bf16=cfg.use_bf16,
+                        tf32=cfg.use_tf32,
                     )
 
                     # Upscale with progress
@@ -3036,6 +3037,7 @@ class CropPreviewDialog(QDialog):
                 overlap=self.config.tile_overlap,
                 fp16=self.config.use_fp16,
                 bf16=self.config.use_bf16,
+                tf32=self.config.use_tf32,
             )
 
             # Convert to numpy array in [0, 1] float range

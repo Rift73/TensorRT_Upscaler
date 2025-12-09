@@ -255,6 +255,8 @@ class MainWindow(QMainWindow):
         self._fp16_check = QCheckBox("fp16")
         self._bf16_check = QCheckBox("bf16")
         self._bf16_check.setChecked(True)
+        self._tf32_check = QCheckBox("tf32")
+        self._tf32_check.setToolTip("TensorFloat32 - faster than FP32, slightly less precise")
 
         # Sharpening button (opens dialog)
         self._sharpen_btn = QPushButton("Sharpen: None")
@@ -522,6 +524,7 @@ class MainWindow(QMainWindow):
         prec_box.setLayout(prec_layout)
         prec_layout.addWidget(self._fp16_check)
         prec_layout.addWidget(self._bf16_check)
+        prec_layout.addWidget(self._tf32_check)
         options_row.addWidget(prec_box)
 
         options_row.addWidget(self._sharpen_btn)
@@ -732,8 +735,9 @@ class MainWindow(QMainWindow):
         self._pytorch_opts_container.setVisible(is_pytorch)
 
         # Show/hide TensorRT-specific precision options
-        # BF16 is TensorRT-only
+        # BF16 and TF32 are TensorRT-only
         self._bf16_check.setVisible(not is_pytorch)
+        self._tf32_check.setVisible(not is_pytorch)
         # FP16 for TensorRT/DirectML, PyTorch has its own checkbox
         self._fp16_check.setVisible(not is_pytorch)
 
@@ -1061,6 +1065,7 @@ class MainWindow(QMainWindow):
         self._upscale_check.setChecked(cfg.upscale_enabled)
         self._fp16_check.setChecked(cfg.use_fp16)
         self._bf16_check.setChecked(cfg.use_bf16)
+        self._tf32_check.setChecked(cfg.use_tf32)
         # Backend dropdown
         if cfg.backend == "pytorch":
             backend_text = "PyTorch"
@@ -1116,6 +1121,7 @@ class MainWindow(QMainWindow):
         cfg.upscale_enabled = self._upscale_check.isChecked()
         cfg.use_fp16 = self._fp16_check.isChecked()
         cfg.use_bf16 = self._bf16_check.isChecked()
+        cfg.use_tf32 = self._tf32_check.isChecked()
         # Backend
         backend_text = self._backend_combo.currentText()
         if backend_text == "PyTorch":
