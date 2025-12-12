@@ -155,8 +155,11 @@ def generate_output_path(
             filename += f"_{model_name}"
         filename += ext
     else:
-        # Single file mode: save to "upscaled" subfolder
-        out_dir = input_path.parent / "upscaled"
+        # Single file mode: use output_dir if provided, otherwise "upscaled" subfolder
+        if output_dir and output_dir.strip():
+            out_dir = Path(output_dir)
+        else:
+            out_dir = input_path.parent / "upscaled"
         filename = stem + suffix
         if append_model_suffix and model_name:
             filename += f"_{model_name}"
