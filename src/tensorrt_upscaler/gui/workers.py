@@ -334,11 +334,49 @@ class ClipboardWorker(QThread):
                     if not self._cancelled:
                         self.progress.emit(current, total)
 
+                height, width = img.shape[:2]
+
+                # Pre-scale (before upscaling)
+                if cfg.prescale_enabled:
+                    new_size = compute_scaled_size(
+                        width, height,
+                        cfg.prescale_mode,
+                        cfg.prescale_width,
+                        cfg.prescale_height,
+                    )
+                    img = resize_array(img, new_size, cfg.prescale_kernel, img_has_alpha)
+                    height, width = img.shape[:2]
+
+                # Upscale
                 result = upscaler.upscale_array(img, img_has_alpha, on_progress)
+                height, width = result.shape[:2]
 
                 if self._cancelled:
                     self.finished.emit(False, "Cancelled", None)
                     return
+
+                # Custom resolution (post-scale)
+                if cfg.custom_res_enabled:
+                    new_size = compute_scaled_size(
+                        width, height,
+                        cfg.custom_res_mode,
+                        cfg.custom_res_width,
+                        cfg.custom_res_height,
+                        keep_aspect=cfg.custom_res_keep_aspect,
+                    )
+                    result = resize_array(result, new_size, cfg.custom_res_kernel, img_has_alpha)
+
+                # Sharpening
+                if cfg.sharpen_enabled and cfg.sharpen_value > 0:
+                    sharpen_method = getattr(cfg, 'sharpen_method', 'cas')
+                    if sharpen_method == 'adaptive':
+                        anime_mode = getattr(cfg, 'sharpen_anime_mode', False)
+                        result = adaptive_sharpen_array(
+                            result, cfg.sharpen_value, img_has_alpha,
+                            overshoot_ctrl=False, anime_mode=anime_mode
+                        )
+                    else:  # cas or legacy
+                        result = cas_sharpen_array(result, cfg.sharpen_value, img_has_alpha)
 
                 # Convert to PIL then QImage
                 result_uint8 = (result * 255.0).clip(0, 255).astype(np.uint8)
