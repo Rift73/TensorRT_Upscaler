@@ -440,8 +440,39 @@ class AnimatedUpscaler:
         total_frames = len(frame_arrays)
         upscaled_frames = []
 
+        # Deduplicate input frames - compute hash for each frame
+        # Duplicate frames reuse the previous upscaled result (saves processing time)
+        def frame_hash(arr: np.ndarray) -> bytes:
+            """Compute hash of frame for deduplication."""
+            # Downsample to 16x16 grayscale for fast comparison
+            from PIL import Image as PILImage
+            h, w = arr.shape[:2]
+            # Convert to uint8 for PIL
+            arr_uint8 = (arr[:, :, :3] * 255).clip(0, 255).astype(np.uint8)
+            pil = PILImage.fromarray(arr_uint8, mode='RGB')
+            small = pil.resize((16, 16), PILImage.LANCZOS).convert('L')
+            return np.array(small).tobytes()
+
+        prev_hash = None
+        prev_pil_img = None
+        skipped_duplicates = 0
+
         # Process each frame
         for i, (arr, duration, has_alpha) in enumerate(frame_arrays):
+            # Check for duplicate frame
+            curr_hash = frame_hash(arr)
+            if prev_hash is not None and curr_hash == prev_hash and prev_pil_img is not None:
+                # Duplicate frame - reuse previous upscaled result, accumulate duration
+                # Add to previous frame's duration instead of creating new frame
+                if upscaled_frames:
+                    prev_img, prev_dur = upscaled_frames[-1]
+                    upscaled_frames[-1] = (prev_img, prev_dur + duration)
+                skipped_duplicates += 1
+                if progress_callback:
+                    progress_callback(i + 1, total_frames)
+                prev_hash = curr_hash
+                continue
+
             height, width = arr.shape[:2]
 
             # Pre-scale (before upscaling)
@@ -489,9 +520,14 @@ class AnimatedUpscaler:
                 pil_img = Image.fromarray(upscaled_uint8, mode='RGB')
 
             upscaled_frames.append((pil_img, duration))
+            prev_hash = curr_hash
+            prev_pil_img = pil_img
 
             if progress_callback:
                 progress_callback(i + 1, total_frames)
+
+        if skipped_duplicates > 0:
+            print(f"Skipped {skipped_duplicates} duplicate frames (merged durations)")
 
         # Determine output format
         if output_format == "auto":
