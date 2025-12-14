@@ -440,8 +440,9 @@ class AnimatedUpscaler:
         total_frames = len(frame_arrays)
         upscaled_frames = []
 
-        # Deduplicate input frames - compute hash for each frame
-        # Duplicate frames reuse the previous upscaled result (saves processing time)
+        # Frame deduplication - reduces output size by merging identical consecutive frames
+        # Duplicate frames are removed; their durations are accumulated into the previous unique frame
+        # This creates variable frame rate output while preserving total animation timing
         def frame_hash(arr: np.ndarray) -> bytes:
             """Compute hash of frame for deduplication."""
             # Downsample to 16x16 grayscale for fast comparison
@@ -462,8 +463,8 @@ class AnimatedUpscaler:
             # Check for duplicate frame
             curr_hash = frame_hash(arr)
             if prev_hash is not None and curr_hash == prev_hash and prev_pil_img is not None:
-                # Duplicate frame - reuse previous upscaled result, accumulate duration
-                # Add to previous frame's duration instead of creating new frame
+                # Duplicate frame detected - skip it and add its duration to previous frame
+                # Result: fewer frames with variable timing, smaller file size
                 if upscaled_frames:
                     prev_img, prev_dur = upscaled_frames[-1]
                     upscaled_frames[-1] = (prev_img, prev_dur + duration)
@@ -527,7 +528,7 @@ class AnimatedUpscaler:
                 progress_callback(i + 1, total_frames)
 
         if skipped_duplicates > 0:
-            print(f"Skipped {skipped_duplicates} duplicate frames (merged durations)")
+            print(f"Deduplicated {skipped_duplicates} frames ({total_frames} -> {len(upscaled_frames)} frames)")
 
         # Determine output format
         if output_format == "auto":
