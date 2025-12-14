@@ -273,6 +273,88 @@ def encode_apng(
     return True
 
 
+def encode_avif(
+    frames: List[Tuple[Image.Image, int]],
+    output_path: str,
+    lossless: bool = False,
+    color_quality: int = 80,
+    alpha_quality: int = 90,
+    speed: int = 6,
+    loop: int = 0,
+) -> bool:
+    """
+    Encode frames to animated AVIF using avifenc.
+
+    Args:
+        frames: List of (image, duration_ms) tuples
+        output_path: Output AVIF path
+        lossless: Use lossless compression
+        color_quality: Color quality 0-100 (higher = better, ignored if lossless)
+        alpha_quality: Alpha quality 0-100 (higher = better, ignored if lossless)
+        speed: Encoding speed 0-10 (0=slowest/best, 10=fastest)
+        loop: Loop count (0 = infinite)
+
+    Returns:
+        True if successful
+    """
+    if not frames:
+        return False
+
+    # Check if avifenc is available
+    try:
+        subprocess.run(["avifenc", "--version"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("avifenc not found, falling back to WebP")
+        # Fall back to WebP
+        webp_path = output_path.rsplit('.', 1)[0] + '.webp'
+        return encode_webp(frames, webp_path, quality=color_quality)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Save frames as PNG
+        frame_paths = []
+        for i, (img, duration) in enumerate(frames):
+            frame_path = os.path.join(tmpdir, f"frame_{i:05d}.png")
+            img.save(frame_path)
+            frame_paths.append(frame_path)
+
+        # Calculate FPS from average duration
+        avg_duration = sum(f[1] for f in frames) / len(frames)
+        fps = 1000.0 / avg_duration if avg_duration > 0 else 10.0
+
+        # Build avifenc command
+        cmd = ["avifenc"]
+
+        if lossless:
+            cmd.extend(["--lossless"])
+        else:
+            # avifenc uses 0-63 for quality (0=best, 63=worst)
+            # Convert from 0-100 (100=best) to 0-63 (0=best)
+            min_q = int((100 - color_quality) * 63 / 100)
+            max_q = min_q
+            cmd.extend(["--min", str(min_q), "--max", str(max_q)])
+
+            # Alpha quality
+            alpha_q = int((100 - alpha_quality) * 63 / 100)
+            cmd.extend(["--minalpha", str(alpha_q), "--maxalpha", str(alpha_q)])
+
+        cmd.extend(["--speed", str(speed)])
+        cmd.extend(["--fps", str(int(fps))])
+
+        if loop != 0:
+            cmd.extend(["--repetition-count", str(loop)])
+
+        # Input frames and output
+        cmd.extend(frame_paths)
+        cmd.append(output_path)
+
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"avifenc failed: {e.stderr.decode() if e.stderr else str(e)}")
+            return False
+
+
 class AnimatedUpscaler:
     """
     Upscaler for animated images with pipelined processing.
@@ -374,6 +456,8 @@ class AnimatedUpscaler:
                 output_format = "webp"
             elif ext == ".png":
                 output_format = "apng"
+            elif ext == ".avif":
+                output_format = "avif"
             else:
                 output_format = "gif"
 
@@ -384,6 +468,8 @@ class AnimatedUpscaler:
             return encode_webp(upscaled_frames, output_path, quality)
         elif output_format == "apng":
             return encode_apng(upscaled_frames, output_path)
+        elif output_format == "avif":
+            return encode_avif(upscaled_frames, output_path, color_quality=quality)
         else:
             return encode_gif(upscaled_frames, output_path)
 
