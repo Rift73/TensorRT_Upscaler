@@ -273,6 +273,89 @@ def encode_apng(
     return True
 
 
+def _rgb_to_yuv444(rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Convert RGB to YUV444 (BT.601 full range).
+
+    Args:
+        rgb: RGB array [H, W, 3] uint8
+
+    Returns:
+        (Y, U, V) planes as uint8 arrays
+    """
+    r = rgb[:, :, 0].astype(np.float32)
+    g = rgb[:, :, 1].astype(np.float32)
+    b = rgb[:, :, 2].astype(np.float32)
+
+    # BT.601 full range
+    y = (0.299 * r + 0.587 * g + 0.114 * b).clip(0, 255).astype(np.uint8)
+    u = (-0.169 * r - 0.331 * g + 0.500 * b + 128).clip(0, 255).astype(np.uint8)
+    v = (0.500 * r - 0.419 * g - 0.081 * b + 128).clip(0, 255).astype(np.uint8)
+
+    return y, u, v
+
+
+def _build_y4m_stream(
+    frames: List[Tuple[Image.Image, int]],
+    has_alpha: bool,
+) -> bytes:
+    """
+    Build Y4M byte stream from PIL frames.
+
+    Args:
+        frames: List of (image, duration_ms) tuples
+        has_alpha: Whether to include alpha plane (C444alpha vs C444)
+
+    Returns:
+        Y4M byte stream
+    """
+    if not frames:
+        return b''
+
+    first_img = frames[0][0]
+    width, height = first_img.size
+
+    # Calculate FPS from average duration
+    avg_duration = sum(f[1] for f in frames) / len(frames)
+    # Use timescale of 1000 for millisecond precision
+    timescale = 1000
+    fps_num = timescale
+    fps_den = int(avg_duration) if avg_duration > 0 else 100
+
+    # Y4M header - C444alpha supports alpha plane
+    colorspace = "C444alpha" if has_alpha else "C444"
+    header = f"YUV4MPEG2 W{width} H{height} F{fps_num}:{fps_den} Ip A1:1 {colorspace}\n"
+
+    chunks = [header.encode()]
+
+    for img, duration in frames:
+        # Convert to RGB/RGBA
+        if has_alpha:
+            rgba = np.array(img.convert("RGBA"))
+            rgb = rgba[:, :, :3]
+            alpha = rgba[:, :, 3]
+        else:
+            rgb = np.array(img.convert("RGB"))
+            alpha = None
+
+        # Convert RGB to YUV
+        y, u, v = _rgb_to_yuv444(rgb)
+
+        # Frame header
+        chunks.append(b"FRAME\n")
+
+        # Y, U, V planes (row-major order)
+        chunks.append(y.tobytes())
+        chunks.append(u.tobytes())
+        chunks.append(v.tobytes())
+
+        # Alpha plane if present
+        if has_alpha and alpha is not None:
+            chunks.append(alpha.tobytes())
+
+    return b''.join(chunks)
+
+
 def encode_avif(
     frames: List[Tuple[Image.Image, int]],
     output_path: str,
@@ -283,7 +366,9 @@ def encode_avif(
     loop: int = 0,
 ) -> bool:
     """
-    Encode frames to animated AVIF using avifenc.
+    Encode frames to animated AVIF using avifenc with Y4M stdin pipe.
+
+    Uses Y4M C444alpha format piped to avifenc stdin - no temp files needed.
 
     Args:
         frames: List of (image, duration_ms) tuples
@@ -305,54 +390,40 @@ def encode_avif(
         subprocess.run(["avifenc", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("avifenc not found, falling back to WebP")
-        # Fall back to WebP
         webp_path = output_path.rsplit('.', 1)[0] + '.webp'
         return encode_webp(frames, webp_path, quality=color_quality)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Save frames as PNG
-        frame_paths = []
-        for i, (img, duration) in enumerate(frames):
-            frame_path = os.path.join(tmpdir, f"frame_{i:05d}.png")
-            img.save(frame_path)
-            frame_paths.append(frame_path)
+    # Check if any frame has alpha
+    has_alpha = any(f[0].mode == "RGBA" for f in frames)
 
-        # Calculate FPS from average duration
-        avg_duration = sum(f[1] for f in frames) / len(frames)
-        fps = 1000.0 / avg_duration if avg_duration > 0 else 10.0
+    # Build Y4M stream
+    y4m_data = _build_y4m_stream(frames, has_alpha)
 
-        # Build avifenc command
-        cmd = ["avifenc"]
+    # Build avifenc command
+    cmd = ["avifenc", "--stdin"]
 
-        if lossless:
-            cmd.extend(["--lossless"])
-        else:
-            # avifenc uses 0-63 for quality (0=best, 63=worst)
-            # Convert from 0-100 (100=best) to 0-63 (0=best)
-            min_q = int((100 - color_quality) * 63 / 100)
-            max_q = min_q
-            cmd.extend(["--min", str(min_q), "--max", str(max_q)])
+    if lossless:
+        cmd.append("--lossless")
+    else:
+        # Use new -q/--qcolor syntax (0-100 where 100 is lossless)
+        cmd.extend(["-q", str(color_quality)])
+        if has_alpha:
+            cmd.extend(["--qalpha", str(alpha_quality)])
 
-            # Alpha quality
-            alpha_q = int((100 - alpha_quality) * 63 / 100)
-            cmd.extend(["--minalpha", str(alpha_q), "--maxalpha", str(alpha_q)])
+    cmd.extend(["--speed", str(speed)])
 
-        cmd.extend(["--speed", str(speed)])
-        cmd.extend(["--fps", str(int(fps))])
+    if loop != 0:
+        cmd.extend(["--repetition-count", str(loop)])
 
-        if loop != 0:
-            cmd.extend(["--repetition-count", str(loop)])
+    # Output path
+    cmd.append(output_path)
 
-        # Input frames and output
-        cmd.extend(frame_paths)
-        cmd.append(output_path)
-
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"avifenc failed: {e.stderr.decode() if e.stderr else str(e)}")
-            return False
+    try:
+        subprocess.run(cmd, input=y4m_data, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"avifenc failed: {e.stderr.decode() if e.stderr else str(e)}")
+        return False
 
 
 class AnimatedUpscaler:
