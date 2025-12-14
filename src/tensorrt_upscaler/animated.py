@@ -382,6 +382,23 @@ class AnimatedUpscaler:
         output_format: str = "auto",
         quality: int = 90,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        # Resolution options
+        prescale_enabled: bool = False,
+        prescale_mode: str = "scale",
+        prescale_width: int = 0,
+        prescale_height: int = 0,
+        prescale_kernel: str = "lanczos",
+        custom_res_enabled: bool = False,
+        custom_res_mode: str = "scale",
+        custom_res_width: int = 0,
+        custom_res_height: int = 0,
+        custom_res_keep_aspect: bool = True,
+        custom_res_kernel: str = "lanczos",
+        # Sharpening options
+        sharpen_enabled: bool = False,
+        sharpen_value: float = 0.0,
+        sharpen_method: str = "cas",
+        sharpen_anime_mode: bool = False,
     ) -> bool:
         """
         Upscale an animated image with pipelined processing.
@@ -389,13 +406,32 @@ class AnimatedUpscaler:
         Args:
             input_path: Input animated image path
             output_path: Output path
-            output_format: "gif", "webp", "apng", or "auto"
+            output_format: "gif", "webp", "apng", "avif", or "auto"
             quality: Output quality 0-100
             progress_callback: Progress callback(current_frame, total_frames)
+            prescale_enabled: Enable pre-scaling before upscale
+            prescale_mode: Pre-scale mode (scale/width/height/fit/fill)
+            prescale_width: Pre-scale target width
+            prescale_height: Pre-scale target height
+            prescale_kernel: Pre-scale interpolation kernel
+            custom_res_enabled: Enable custom resolution after upscale
+            custom_res_mode: Custom res mode (scale/width/height/fit/fill)
+            custom_res_width: Custom res target width
+            custom_res_height: Custom res target height
+            custom_res_keep_aspect: Keep aspect ratio for custom res
+            custom_res_kernel: Custom res interpolation kernel
+            sharpen_enabled: Enable sharpening
+            sharpen_value: Sharpening strength
+            sharpen_method: Sharpening method (cas/adaptive)
+            sharpen_anime_mode: Use anime mode for adaptive sharpening
 
         Returns:
             True if successful
         """
+        # Import resize and sharpen functions
+        from .resize import resize_array, compute_scaled_size
+        from .sharpening import cas_sharpen_array, adaptive_sharpen_array
+
         # Extract all frames to numpy arrays (faster than PIL during upscaling)
         frame_arrays = extract_frames_as_arrays(input_path)
         if not frame_arrays:
@@ -404,48 +440,58 @@ class AnimatedUpscaler:
         total_frames = len(frame_arrays)
         upscaled_frames = []
 
-        # Use async engine API for pipelined frame processing
-        engine = self.upscaler.engine
-        has_async = hasattr(engine, 'infer_async_start')
+        # Process each frame
+        for i, (arr, duration, has_alpha) in enumerate(frame_arrays):
+            height, width = arr.shape[:2]
 
-        if has_async and total_frames >= 2:
-            # Pipelined processing with double-buffering
-            pending_result = None
-            pending_info = None
+            # Pre-scale (before upscaling)
+            if prescale_enabled:
+                new_size = compute_scaled_size(
+                    width, height,
+                    prescale_mode,
+                    prescale_width,
+                    prescale_height,
+                )
+                arr = resize_array(arr, new_size, prescale_kernel, has_alpha)
+                height, width = arr.shape[:2]
 
-            for i, (arr, duration, has_alpha) in enumerate(frame_arrays):
-                # Start upscaling current frame
-                upscaled = self.upscaler.upscale_array(arr, has_alpha)
+            # Upscale
+            upscaled = self.upscaler.upscale_array(arr, has_alpha)
+            height, width = upscaled.shape[:2]
 
-                # Convert to PIL and store
-                if has_alpha:
-                    upscaled_uint8 = (upscaled * 255.0).clip(0, 255).astype(np.uint8)
-                    pil_img = Image.fromarray(upscaled_uint8, mode='RGBA')
-                else:
-                    upscaled_uint8 = (upscaled[:, :, :3] * 255.0).clip(0, 255).astype(np.uint8)
-                    pil_img = Image.fromarray(upscaled_uint8, mode='RGB')
+            # Custom resolution (after upscaling)
+            if custom_res_enabled:
+                new_size = compute_scaled_size(
+                    width, height,
+                    custom_res_mode,
+                    custom_res_width,
+                    custom_res_height,
+                    keep_aspect=custom_res_keep_aspect,
+                )
+                upscaled = resize_array(upscaled, new_size, custom_res_kernel, has_alpha)
 
-                upscaled_frames.append((pil_img, duration))
+            # Sharpening
+            if sharpen_enabled and sharpen_value > 0:
+                if sharpen_method == 'adaptive':
+                    upscaled = adaptive_sharpen_array(
+                        upscaled, sharpen_value, has_alpha,
+                        overshoot_ctrl=False, anime_mode=sharpen_anime_mode
+                    )
+                else:  # cas
+                    upscaled = cas_sharpen_array(upscaled, sharpen_value, has_alpha)
 
-                if progress_callback:
-                    progress_callback(i + 1, total_frames)
-        else:
-            # Sequential processing
-            for i, (arr, duration, has_alpha) in enumerate(frame_arrays):
-                upscaled = self.upscaler.upscale_array(arr, has_alpha)
+            # Convert to PIL
+            if has_alpha:
+                upscaled_uint8 = (upscaled * 255.0).clip(0, 255).astype(np.uint8)
+                pil_img = Image.fromarray(upscaled_uint8, mode='RGBA')
+            else:
+                upscaled_uint8 = (upscaled[:, :, :3] * 255.0).clip(0, 255).astype(np.uint8)
+                pil_img = Image.fromarray(upscaled_uint8, mode='RGB')
 
-                # Convert to PIL
-                if has_alpha:
-                    upscaled_uint8 = (upscaled * 255.0).clip(0, 255).astype(np.uint8)
-                    pil_img = Image.fromarray(upscaled_uint8, mode='RGBA')
-                else:
-                    upscaled_uint8 = (upscaled[:, :, :3] * 255.0).clip(0, 255).astype(np.uint8)
-                    pil_img = Image.fromarray(upscaled_uint8, mode='RGB')
+            upscaled_frames.append((pil_img, duration))
 
-                upscaled_frames.append((pil_img, duration))
-
-                if progress_callback:
-                    progress_callback(i + 1, total_frames)
+            if progress_callback:
+                progress_callback(i + 1, total_frames)
 
         # Determine output format
         if output_format == "auto":

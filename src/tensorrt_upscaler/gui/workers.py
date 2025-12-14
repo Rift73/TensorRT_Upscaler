@@ -174,13 +174,31 @@ class UpscaleWorker(QThread):
                         def animated_progress(current, total):
                             self.progress.emit(current, total)
 
-                        # Upscale animated image
+                        # Upscale animated image with all resolution/sharpen options
                         animated_upscaler.upscale_animated(
                             input_path,
                             output_path,
                             output_format=animated_format,
                             quality=getattr(cfg, 'gif_quality', 90),
                             progress_callback=animated_progress,
+                            # Pre-scale options
+                            prescale_enabled=cfg.prescale_enabled,
+                            prescale_mode=cfg.prescale_mode,
+                            prescale_width=cfg.prescale_width,
+                            prescale_height=cfg.prescale_height,
+                            prescale_kernel=cfg.prescale_kernel,
+                            # Custom resolution options
+                            custom_res_enabled=cfg.custom_res_enabled,
+                            custom_res_mode=cfg.custom_res_mode,
+                            custom_res_width=cfg.custom_res_width,
+                            custom_res_height=cfg.custom_res_height,
+                            custom_res_keep_aspect=cfg.custom_res_keep_aspect,
+                            custom_res_kernel=cfg.custom_res_kernel,
+                            # Sharpening options
+                            sharpen_enabled=cfg.sharpen_enabled,
+                            sharpen_value=cfg.sharpen_value,
+                            sharpen_method=getattr(cfg, 'sharpen_method', 'cas'),
+                            sharpen_anime_mode=getattr(cfg, 'sharpen_anime_mode', False),
                         )
 
                         file_elapsed = time.perf_counter() - file_start
