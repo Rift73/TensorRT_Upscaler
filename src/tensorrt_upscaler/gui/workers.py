@@ -24,7 +24,9 @@ from ..utils import (
     generate_output_path,
     optimize_png,
     should_skip_image,
+    is_animated,
 )
+from ..animated import AnimatedUpscaler
 
 
 class UpscaleWorker(QThread):
@@ -154,6 +156,37 @@ class UpscaleWorker(QThread):
                         self._skipped_count += 1
                         self.file_skipped.emit(input_path, skip_reason)
                         # Prefetch next file if we're skipping
+                        if i + 1 < total_files:
+                            async_loader.prefetch(self.files[i + 1])
+                        continue
+
+                    # Check if animated image (GIF, animated WebP, APNG)
+                    if is_animated(input_path):
+                        # Handle animated image separately
+                        animated_format = getattr(cfg, 'animated_format', 'gif')
+                        # Change output extension based on format
+                        output_ext = f".{animated_format}" if animated_format != "apng" else ".png"
+                        output_path = os.path.splitext(output_path)[0] + output_ext
+
+                        # Create AnimatedUpscaler wrapper
+                        animated_upscaler = AnimatedUpscaler(upscaler)
+
+                        def animated_progress(current, total):
+                            self.progress.emit(current, total)
+
+                        # Upscale animated image
+                        animated_upscaler.upscale_animated(
+                            input_path,
+                            output_path,
+                            output_format=animated_format,
+                            quality=getattr(cfg, 'gif_quality', 90),
+                            progress_callback=animated_progress,
+                        )
+
+                        file_elapsed = time.perf_counter() - file_start
+                        self.file_done.emit(input_path, output_path, file_elapsed)
+
+                        # Prefetch next file
                         if i + 1 < total_files:
                             async_loader.prefetch(self.files[i + 1])
                         continue
