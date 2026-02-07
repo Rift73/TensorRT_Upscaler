@@ -8,44 +8,22 @@ Optimizations:
 - Background frame encoding while processing
 """
 
-import os
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional, Callable, List, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image
 import numpy as np
 
-
-def is_animated(path: str) -> bool:
-    """Check if an image file is animated."""
-    try:
-        with Image.open(path) as img:
-            try:
-                img.seek(1)
-                return True
-            except EOFError:
-                return False
-    except Exception:
-        return False
-
-
-def get_frame_count(path: str) -> int:
-    """Get the number of frames in an animated image."""
-    try:
-        with Image.open(path) as img:
-            count = 0
-            try:
-                while True:
-                    count += 1
-                    img.seek(count)
-            except EOFError:
-                pass
-            return count
-    except Exception:
-        return 1
+from .utils import is_animated, get_frame_count  # noqa: F401 - re-exported for backwards compat
+from .animated_encoders import (  # noqa: F401 - re-exported for backwards compat
+    encode_gif,
+    encode_gif_gifski,
+    encode_webp,
+    encode_apng,
+    encode_avif,
+    deduplicate_frames,
+)
 
 
 def extract_frames(path: str) -> List[Tuple[Image.Image, int]]:
@@ -96,336 +74,6 @@ def extract_frames_as_arrays(path: str) -> List[Tuple[np.ndarray, int, bool]]:
     return frames
 
 
-def encode_gif(
-    frames: List[Tuple[Image.Image, int]],
-    output_path: str,
-    loop: int = 0,
-) -> bool:
-    """
-    Encode frames to GIF using Pillow.
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        output_path: Output GIF path
-        loop: Loop count (0 = infinite)
-
-    Returns:
-        True if successful
-    """
-    if not frames:
-        return False
-
-    images = [f[0] for f in frames]
-    durations = [f[1] for f in frames]
-
-    # Convert to palette mode for GIF
-    images_p = []
-    for img in images:
-        # Convert RGBA to P with transparency
-        if img.mode == "RGBA":
-            # Create a copy with white background for quantization
-            bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-            bg.paste(img, mask=img.split()[3])
-            img_p = bg.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=255)
-        else:
-            img_p = img.convert("P", palette=Image.ADAPTIVE, colors=256)
-        images_p.append(img_p)
-
-    images_p[0].save(
-        output_path,
-        save_all=True,
-        append_images=images_p[1:],
-        duration=durations,
-        loop=loop,
-        optimize=False,
-    )
-
-    return True
-
-
-def encode_gif_gifski(
-    frames: List[Tuple[Image.Image, int]],
-    output_path: str,
-    quality: int = 90,
-    loop: int = 0,
-) -> bool:
-    """
-    Encode frames to GIF using gifski (better quality).
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        output_path: Output GIF path
-        quality: Quality 1-100
-        loop: Loop count (0 = infinite)
-
-    Returns:
-        True if successful
-    """
-    # Check if gifski is available
-    try:
-        subprocess.run(["gifski", "--version"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # Fall back to Pillow
-        return encode_gif(frames, output_path, loop)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Save frames as PNG in parallel
-        def save_frame(args):
-            i, img = args
-            frame_path = os.path.join(tmpdir, f"frame_{i:05d}.png")
-            img.save(frame_path)
-            return frame_path
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            frame_paths = list(executor.map(save_frame, enumerate(f[0] for f in frames)))
-
-        # Calculate FPS from average duration
-        avg_duration = sum(f[1] for f in frames) / len(frames)
-        fps = 1000.0 / avg_duration if avg_duration > 0 else 10.0
-
-        # Run gifski
-        cmd = [
-            "gifski",
-            "--quality", str(quality),
-            "--fps", str(fps),
-            "--output", output_path,
-        ]
-        if loop != 0:
-            cmd.extend(["--repeat", str(loop)])
-        cmd.extend(frame_paths)
-
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            return True
-        except subprocess.CalledProcessError:
-            return encode_gif(frames, output_path, loop)
-
-
-def encode_webp(
-    frames: List[Tuple[Image.Image, int]],
-    output_path: str,
-    quality: int = 90,
-    lossless: bool = False,
-    loop: int = 0,
-) -> bool:
-    """
-    Encode frames to animated WebP.
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        output_path: Output WebP path
-        quality: Quality 0-100
-        lossless: Use lossless compression
-        loop: Loop count (0 = infinite)
-
-    Returns:
-        True if successful
-    """
-    if not frames:
-        return False
-
-    images = [f[0] for f in frames]
-    durations = [f[1] for f in frames]
-
-    images[0].save(
-        output_path,
-        save_all=True,
-        append_images=images[1:],
-        duration=durations,
-        loop=loop,
-        quality=quality,
-        lossless=lossless,
-    )
-
-    return True
-
-
-def encode_apng(
-    frames: List[Tuple[Image.Image, int]],
-    output_path: str,
-    loop: int = 0,
-) -> bool:
-    """
-    Encode frames to APNG.
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        output_path: Output APNG path
-        loop: Loop count (0 = infinite)
-
-    Returns:
-        True if successful
-    """
-    if not frames:
-        return False
-
-    images = [f[0] for f in frames]
-    durations = [f[1] for f in frames]
-
-    images[0].save(
-        output_path,
-        save_all=True,
-        append_images=images[1:],
-        duration=durations,
-        loop=loop,
-    )
-
-    return True
-
-
-def _rgb_to_yuv444(rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Convert RGB to YUV444 (BT.601 full range).
-
-    Args:
-        rgb: RGB array [H, W, 3] uint8
-
-    Returns:
-        (Y, U, V) planes as uint8 arrays
-    """
-    r = rgb[:, :, 0].astype(np.float32)
-    g = rgb[:, :, 1].astype(np.float32)
-    b = rgb[:, :, 2].astype(np.float32)
-
-    # BT.601 full range
-    y = (0.299 * r + 0.587 * g + 0.114 * b).clip(0, 255).astype(np.uint8)
-    u = (-0.169 * r - 0.331 * g + 0.500 * b + 128).clip(0, 255).astype(np.uint8)
-    v = (0.500 * r - 0.419 * g - 0.081 * b + 128).clip(0, 255).astype(np.uint8)
-
-    return y, u, v
-
-
-def _build_y4m_stream(
-    frames: List[Tuple[Image.Image, int]],
-    has_alpha: bool,
-) -> bytes:
-    """
-    Build Y4M byte stream from PIL frames.
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        has_alpha: Whether to include alpha plane (C444alpha vs C444)
-
-    Returns:
-        Y4M byte stream
-    """
-    if not frames:
-        return b''
-
-    first_img = frames[0][0]
-    width, height = first_img.size
-
-    # Calculate FPS from average duration
-    avg_duration = sum(f[1] for f in frames) / len(frames)
-    # Use timescale of 1000 for millisecond precision
-    timescale = 1000
-    fps_num = timescale
-    fps_den = int(avg_duration) if avg_duration > 0 else 100
-
-    # Y4M header - C444alpha supports alpha plane
-    colorspace = "C444alpha" if has_alpha else "C444"
-    header = f"YUV4MPEG2 W{width} H{height} F{fps_num}:{fps_den} Ip A1:1 {colorspace}\n"
-
-    chunks = [header.encode()]
-
-    for img, duration in frames:
-        # Convert to RGB/RGBA
-        if has_alpha:
-            rgba = np.array(img.convert("RGBA"))
-            rgb = rgba[:, :, :3]
-            alpha = rgba[:, :, 3]
-        else:
-            rgb = np.array(img.convert("RGB"))
-            alpha = None
-
-        # Convert RGB to YUV
-        y, u, v = _rgb_to_yuv444(rgb)
-
-        # Frame header
-        chunks.append(b"FRAME\n")
-
-        # Y, U, V planes (row-major order)
-        chunks.append(y.tobytes())
-        chunks.append(u.tobytes())
-        chunks.append(v.tobytes())
-
-        # Alpha plane if present
-        if has_alpha and alpha is not None:
-            chunks.append(alpha.tobytes())
-
-    return b''.join(chunks)
-
-
-def encode_avif(
-    frames: List[Tuple[Image.Image, int]],
-    output_path: str,
-    lossless: bool = False,
-    color_quality: int = 80,
-    alpha_quality: int = 90,
-    speed: int = 6,
-    loop: int = 0,
-) -> bool:
-    """
-    Encode frames to animated AVIF using avifenc with Y4M stdin pipe.
-
-    Uses Y4M C444alpha format piped to avifenc stdin - no temp files needed.
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        output_path: Output AVIF path
-        lossless: Use lossless compression
-        color_quality: Color quality 0-100 (higher = better, ignored if lossless)
-        alpha_quality: Alpha quality 0-100 (higher = better, ignored if lossless)
-        speed: Encoding speed 0-10 (0=slowest/best, 10=fastest)
-        loop: Loop count (0 = infinite)
-
-    Returns:
-        True if successful
-    """
-    if not frames:
-        return False
-
-    # Check if avifenc is available
-    try:
-        subprocess.run(["avifenc", "--version"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("avifenc not found, falling back to WebP")
-        webp_path = output_path.rsplit('.', 1)[0] + '.webp'
-        return encode_webp(frames, webp_path, quality=color_quality)
-
-    # Check if any frame has alpha
-    has_alpha = any(f[0].mode == "RGBA" for f in frames)
-
-    # Build Y4M stream
-    y4m_data = _build_y4m_stream(frames, has_alpha)
-
-    # Build avifenc command
-    cmd = ["avifenc", "--stdin"]
-
-    if lossless:
-        cmd.append("--lossless")
-    else:
-        # Use new -q/--qcolor syntax (0-100 where 100 is lossless)
-        cmd.extend(["-q", str(color_quality)])
-        if has_alpha:
-            cmd.extend(["--qalpha", str(alpha_quality)])
-
-    cmd.extend(["--speed", str(speed)])
-
-    if loop != 0:
-        cmd.extend(["--repetition-count", str(loop)])
-
-    # Output path
-    cmd.append(output_path)
-
-    try:
-        subprocess.run(cmd, input=y4m_data, check=True, capture_output=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"avifenc failed: {e.stderr.decode() if e.stderr else str(e)}")
-        return False
-
-
 class AnimatedUpscaler:
     """
     Upscaler for animated images with pipelined processing.
@@ -446,6 +94,100 @@ class AnimatedUpscaler:
         self.upscaler = upscaler
         self._executor = ThreadPoolExecutor(max_workers=2)
 
+    def _process_frame(
+        self,
+        arr: np.ndarray,
+        has_alpha: bool,
+        resize_array,
+        compute_scaled_size,
+        cas_sharpen_array,
+        adaptive_sharpen_array,
+        prescale_enabled: bool,
+        prescale_mode: str,
+        prescale_width: int,
+        prescale_height: int,
+        prescale_kernel: str,
+        prescale_scale_factor: float,
+        custom_res_enabled: bool,
+        custom_res_mode: str,
+        custom_res_width: int,
+        custom_res_height: int,
+        custom_res_keep_aspect: bool,
+        custom_res_kernel: str,
+        custom_res_scale_factor: float,
+        sharpen_enabled: bool,
+        sharpen_value: float,
+        sharpen_method: str,
+        sharpen_anime_mode: bool,
+    ) -> Image.Image:
+        """Process a single frame: pre-scale, upscale, custom res, sharpen, convert to PIL."""
+        height, width = arr.shape[:2]
+
+        # Pre-scale (before upscaling)
+        if prescale_enabled:
+            new_size = compute_scaled_size(
+                width, height,
+                prescale_mode, prescale_width, prescale_height,
+                scale_factor=prescale_scale_factor,
+            )
+            arr = resize_array(arr, new_size, prescale_kernel, has_alpha)
+
+        # Upscale
+        upscaled = self.upscaler.upscale_array(arr, has_alpha)
+        height, width = upscaled.shape[:2]
+
+        # Custom resolution (after upscaling)
+        if custom_res_enabled:
+            new_size = compute_scaled_size(
+                width, height,
+                custom_res_mode, custom_res_width, custom_res_height,
+                keep_aspect=custom_res_keep_aspect,
+                scale_factor=custom_res_scale_factor,
+            )
+            upscaled = resize_array(upscaled, new_size, custom_res_kernel, has_alpha)
+
+        # Sharpening
+        if sharpen_enabled and sharpen_value > 0:
+            if sharpen_method == 'adaptive':
+                upscaled = adaptive_sharpen_array(
+                    upscaled, sharpen_value, has_alpha,
+                    overshoot_ctrl=False, anime_mode=sharpen_anime_mode
+                )
+            else:  # cas
+                upscaled = cas_sharpen_array(upscaled, sharpen_value, has_alpha)
+
+        # Convert to PIL
+        if has_alpha:
+            upscaled_uint8 = (upscaled * 255.0).clip(0, 255).astype(np.uint8)
+            return Image.fromarray(upscaled_uint8, mode='RGBA')
+        else:
+            upscaled_uint8 = (upscaled[:, :, :3] * 255.0).clip(0, 255).astype(np.uint8)
+            return Image.fromarray(upscaled_uint8, mode='RGB')
+
+    @staticmethod
+    def _encode_frames(
+        frames: List[Tuple[Image.Image, int]],
+        output_path: str,
+        output_format: str,
+        quality: int,
+    ) -> bool:
+        """Determine output format and encode frames."""
+        if output_format == "auto":
+            ext = Path(output_path).suffix.lower()
+            format_map = {".gif": "gif", ".webp": "webp", ".png": "apng", ".avif": "avif"}
+            output_format = format_map.get(ext, "gif")
+
+        if output_format == "gif":
+            return encode_gif_gifski(frames, output_path, quality)
+        elif output_format == "webp":
+            return encode_webp(frames, output_path, quality)
+        elif output_format == "apng":
+            return encode_apng(frames, output_path)
+        elif output_format == "avif":
+            return encode_avif(frames, output_path, color_quality=quality)
+        else:
+            return encode_gif(frames, output_path)
+
     def upscale_animated(
         self,
         input_path: str,
@@ -459,12 +201,14 @@ class AnimatedUpscaler:
         prescale_width: int = 0,
         prescale_height: int = 0,
         prescale_kernel: str = "lanczos",
+        prescale_scale_factor: float = 2.0,
         custom_res_enabled: bool = False,
         custom_res_mode: str = "scale",
         custom_res_width: int = 0,
         custom_res_height: int = 0,
         custom_res_keep_aspect: bool = True,
         custom_res_kernel: str = "lanczos",
+        custom_res_scale_factor: float = 2.0,
         # Sharpening options
         sharpen_enabled: bool = False,
         sharpen_value: float = 0.0,
@@ -511,31 +255,23 @@ class AnimatedUpscaler:
         total_frames = len(frame_arrays)
         upscaled_frames = []
 
-        # Frame deduplication - reduces output size by merging identical consecutive frames
-        # Duplicate frames are removed; their durations are accumulated into the previous unique frame
-        # This creates variable frame rate output while preserving total animation timing
+        # Frame deduplication hash function
         def frame_hash(arr: np.ndarray) -> bytes:
             """Compute hash of frame for deduplication."""
-            # Downsample to 16x16 grayscale for fast comparison
-            from PIL import Image as PILImage
-            h, w = arr.shape[:2]
-            # Convert to uint8 for PIL
             arr_uint8 = (arr[:, :, :3] * 255).clip(0, 255).astype(np.uint8)
-            pil = PILImage.fromarray(arr_uint8, mode='RGB')
-            small = pil.resize((16, 16), PILImage.LANCZOS).convert('L')
+            pil = Image.fromarray(arr_uint8, mode='RGB')
+            small = pil.resize((16, 16), Image.LANCZOS).convert('L')
             return np.array(small).tobytes()
 
         prev_hash = None
-        prev_pil_img = None
         skipped_duplicates = 0
 
         # Process each frame
         for i, (arr, duration, has_alpha) in enumerate(frame_arrays):
             # Check for duplicate frame
             curr_hash = frame_hash(arr)
-            if prev_hash is not None and curr_hash == prev_hash and prev_pil_img is not None:
-                # Duplicate frame detected - skip it and add its duration to previous frame
-                # Result: fewer frames with variable timing, smaller file size
+            if prev_hash is not None and curr_hash == prev_hash:
+                # Duplicate frame — merge duration into previous frame
                 if upscaled_frames:
                     prev_img, prev_dur = upscaled_frames[-1]
                     upscaled_frames[-1] = (prev_img, prev_dur + duration)
@@ -545,55 +281,19 @@ class AnimatedUpscaler:
                 prev_hash = curr_hash
                 continue
 
-            height, width = arr.shape[:2]
-
-            # Pre-scale (before upscaling)
-            if prescale_enabled:
-                new_size = compute_scaled_size(
-                    width, height,
-                    prescale_mode,
-                    prescale_width,
-                    prescale_height,
-                )
-                arr = resize_array(arr, new_size, prescale_kernel, has_alpha)
-                height, width = arr.shape[:2]
-
-            # Upscale
-            upscaled = self.upscaler.upscale_array(arr, has_alpha)
-            height, width = upscaled.shape[:2]
-
-            # Custom resolution (after upscaling)
-            if custom_res_enabled:
-                new_size = compute_scaled_size(
-                    width, height,
-                    custom_res_mode,
-                    custom_res_width,
-                    custom_res_height,
-                    keep_aspect=custom_res_keep_aspect,
-                )
-                upscaled = resize_array(upscaled, new_size, custom_res_kernel, has_alpha)
-
-            # Sharpening
-            if sharpen_enabled and sharpen_value > 0:
-                if sharpen_method == 'adaptive':
-                    upscaled = adaptive_sharpen_array(
-                        upscaled, sharpen_value, has_alpha,
-                        overshoot_ctrl=False, anime_mode=sharpen_anime_mode
-                    )
-                else:  # cas
-                    upscaled = cas_sharpen_array(upscaled, sharpen_value, has_alpha)
-
-            # Convert to PIL
-            if has_alpha:
-                upscaled_uint8 = (upscaled * 255.0).clip(0, 255).astype(np.uint8)
-                pil_img = Image.fromarray(upscaled_uint8, mode='RGBA')
-            else:
-                upscaled_uint8 = (upscaled[:, :, :3] * 255.0).clip(0, 255).astype(np.uint8)
-                pil_img = Image.fromarray(upscaled_uint8, mode='RGB')
+            pil_img = self._process_frame(
+                arr, has_alpha,
+                resize_array, compute_scaled_size,
+                cas_sharpen_array, adaptive_sharpen_array,
+                prescale_enabled, prescale_mode, prescale_width, prescale_height,
+                prescale_kernel, prescale_scale_factor,
+                custom_res_enabled, custom_res_mode, custom_res_width, custom_res_height,
+                custom_res_keep_aspect, custom_res_kernel, custom_res_scale_factor,
+                sharpen_enabled, sharpen_value, sharpen_method, sharpen_anime_mode,
+            )
 
             upscaled_frames.append((pil_img, duration))
             prev_hash = curr_hash
-            prev_pil_img = pil_img
 
             if progress_callback:
                 progress_callback(i + 1, total_frames)
@@ -601,86 +301,9 @@ class AnimatedUpscaler:
         if skipped_duplicates > 0:
             print(f"Deduplicated {skipped_duplicates} frames ({total_frames} -> {len(upscaled_frames)} frames)")
 
-        # Determine output format
-        if output_format == "auto":
-            ext = Path(output_path).suffix.lower()
-            if ext == ".gif":
-                output_format = "gif"
-            elif ext == ".webp":
-                output_format = "webp"
-            elif ext == ".png":
-                output_format = "apng"
-            elif ext == ".avif":
-                output_format = "avif"
-            else:
-                output_format = "gif"
-
-        # Encode output
-        if output_format == "gif":
-            return encode_gif_gifski(upscaled_frames, output_path, quality)
-        elif output_format == "webp":
-            return encode_webp(upscaled_frames, output_path, quality)
-        elif output_format == "apng":
-            return encode_apng(upscaled_frames, output_path)
-        elif output_format == "avif":
-            return encode_avif(upscaled_frames, output_path, color_quality=quality)
-        else:
-            return encode_gif(upscaled_frames, output_path)
+        return self._encode_frames(upscaled_frames, output_path, output_format, quality)
 
     def __del__(self):
         """Cleanup resources."""
         if hasattr(self, '_executor'):
             self._executor.shutdown(wait=False)
-
-
-def deduplicate_frames(
-    frames: List[Tuple[Image.Image, int]],
-    threshold: float = 0.99,
-) -> List[Tuple[Image.Image, int]]:
-    """
-    Remove duplicate frames by merging their durations.
-
-    Args:
-        frames: List of (image, duration_ms) tuples
-        threshold: Similarity threshold (0-1) for considering frames identical
-
-    Returns:
-        Deduplicated frames list
-    """
-    if len(frames) <= 1:
-        return frames
-
-    def image_hash(img: Image.Image) -> bytes:
-        """Compute perceptual hash of image."""
-        # Resize to small size and convert to grayscale
-        small = img.resize((16, 16), Image.LANCZOS).convert("L")
-        return np.array(small).tobytes()
-
-    result = []
-    prev_hash = None
-    accumulated_duration = 0
-
-    for img, duration in frames:
-        curr_hash = image_hash(img)
-
-        if prev_hash is not None and curr_hash == prev_hash:
-            # Duplicate frame - accumulate duration
-            accumulated_duration += duration
-        else:
-            # New unique frame
-            if result:
-                # Update previous frame's duration
-                prev_img, prev_dur = result[-1]
-                result[-1] = (prev_img, prev_dur + accumulated_duration)
-
-            result.append((img, duration))
-            accumulated_duration = 0
-
-        prev_hash = curr_hash
-
-    # Handle last frame's accumulated duration
-    if result and accumulated_duration > 0:
-        prev_img, prev_dur = result[-1]
-        result[-1] = (prev_img, prev_dur + accumulated_duration)
-
-    return result

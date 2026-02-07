@@ -21,8 +21,7 @@ from typing import Optional, List
 from PySide6.QtCore import Qt, Signal, QThread, QSize, QTimer, QMimeData, QUrl, QEvent, QFileSystemWatcher
 from PySide6.QtGui import (
     QDragEnterEvent, QDropEvent, QPixmap, QImage, QPalette, QColor,
-    QClipboard, QKeySequence, QShortcut, QAction, QGuiApplication,
-    QIcon,
+    QClipboard, QAction, QGuiApplication, QIcon,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -53,7 +52,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QScrollArea,
     QSystemTrayIcon,
-    QStyle,
     QDialog,
 )
 
@@ -73,7 +71,10 @@ from .utils import (
 )
 
 # Import from refactored modules
-from .gui import UpscaleWorker, ClipboardWorker, DropLineEdit, ThumbnailLabel
+from .gui import (
+    UpscaleWorker, ClipboardWorker, DropLineEdit, ThumbnailLabel,
+    TrayManagerMixin, ShortcutsMixin, WatchFolderMixin, ProgressTrackerMixin,
+)
 from .dialogs import (
     CustomResolutionDialog,
     PyTorchOptionsDialog,
@@ -106,15 +107,23 @@ from .fast_io import (
 from .theme import ThemeManager, AVAILABLE_THEMES, DEFAULT_THEME
 
 
-# Note: DropLineEdit, UpscaleWorker, ClipboardWorker, ThumbnailLabel
-# are now imported from .gui subpackage (see imports above)
-
-
-class MainWindow(QMainWindow):
+class MainWindow(
+    TrayManagerMixin,
+    ShortcutsMixin,
+    WatchFolderMixin,
+    ProgressTrackerMixin,
+    QMainWindow,
+):
     """Main application window with full feature support.
 
     Layout matches vapoursynth_image_upscaler for consistency.
     Uses QGridLayout with thumbnail preview on right side.
+
+    Mixins:
+    - TrayManagerMixin: System tray icon (gui/tray_manager.py)
+    - ShortcutsMixin: Keyboard shortcuts (gui/shortcuts.py)
+    - WatchFolderMixin: Watch folder mode (gui/watch_folder.py)
+    - ProgressTrackerMixin: Progress bars and timing (gui/progress_tracker.py)
     """
 
     def __init__(self):
@@ -1706,213 +1715,6 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self._progress_label.setText("Cancelling...")
 
-    def _update_time_display(self):
-        """Update elapsed time and ETA labels."""
-        if self._batch_start_time <= 0:
-            return
-
-        elapsed = time.perf_counter() - self._batch_start_time
-        elapsed_str = format_time_hms(elapsed)
-
-        if self._current_avg_per_image > 0 and self._completed_files_in_batch > 0:
-            remaining_files = self._total_files_in_batch - self._completed_files_in_batch
-            eta_seconds = remaining_files * self._current_avg_per_image
-            eta_str = format_time_hms(eta_seconds)
-        else:
-            eta_str = "--:--:--"
-
-        self._time_label.setText(f"Elapsed: {elapsed_str} | ETA: {eta_str}")
-
-    def _on_progress(self, current: int, total: int):
-        """Update tile progress - records timing for smooth interpolation."""
-        now = time.perf_counter()
-
-        # Calculate time per tile unit for interpolation
-        if current > self._last_tile_current and self._last_tile_current > 0:
-            delta_tiles = current - self._last_tile_current
-            delta_time = now - self._last_tile_update_time
-            if delta_tiles > 0 and delta_time > 0:
-                # Exponential moving average for smoother estimation
-                new_rate = delta_time / delta_tiles
-                if self._tile_time_per_unit > 0:
-                    self._tile_time_per_unit = 0.7 * self._tile_time_per_unit + 0.3 * new_rate
-                else:
-                    self._tile_time_per_unit = new_rate
-
-        # Store current state for next update
-        self._last_tile_current = current
-        self._last_tile_total = total
-        self._last_tile_update_time = now
-
-        # Set base progress (will be interpolated by smooth timer)
-        self._interpolated_tile_progress = current / total if total > 0 else 0.0
-
-    def _update_smooth_progress(self):
-        """Interpolate and update progress bars smoothly (called every 50ms)."""
-        now = time.perf_counter()
-        time_on_current = now - self._current_image_start_time
-
-        # Interpolate tile progress using multiple strategies
-        tile_progress = 0.0
-
-        # Strategy 1: Use tile-based timing if we have real tile progress
-        if self._tile_time_per_unit > 0 and self._last_tile_total > 0 and self._last_tile_current > 0:
-            # Calculate how much progress we expect since last update
-            time_since_update = now - self._last_tile_update_time
-            expected_progress = time_since_update / self._tile_time_per_unit
-
-            # Interpolate: base progress + fraction of next tile
-            base_progress = self._last_tile_current / self._last_tile_total
-            tile_progress = base_progress + (expected_progress / self._last_tile_total)
-
-            # Clamp to reasonable bounds (don't exceed 100%, don't go below base)
-            tile_progress = min(tile_progress, 1.0)
-            tile_progress = max(tile_progress, base_progress)
-
-        # Strategy 2: Use time-based extrapolation from previous image duration
-        elif self._last_image_duration > 0:
-            # Estimate progress based on how long previous image took
-            # Use eased progress curve for more natural feel (ease-out)
-            raw_progress = time_on_current / self._last_image_duration
-            # Apply ease-out curve: progress accelerates at start, slows near end
-            # This looks more natural and avoids overshooting
-            raw_progress = min(raw_progress, 0.98)  # Cap at 98% to avoid premature completion
-            # Ease-out quadratic: 1 - (1-t)^2
-            tile_progress = 1.0 - (1.0 - raw_progress) ** 2
-            tile_progress = max(0.0, min(tile_progress, 0.98))
-
-        # Strategy 3: Use average time per image if no other data
-        elif self._current_avg_per_image > 0:
-            raw_progress = time_on_current / self._current_avg_per_image
-            raw_progress = min(raw_progress, 0.98)
-            tile_progress = 1.0 - (1.0 - raw_progress) ** 2
-            tile_progress = max(0.0, min(tile_progress, 0.98))
-
-        # Strategy 4: Fallback to discrete progress
-        else:
-            tile_progress = self._interpolated_tile_progress
-
-        tile_value = int(tile_progress * 1000)
-        self._progress_bar.setValue(tile_value)
-
-        # Interpolate batch progress using time-based estimation
-        if self._total_files_in_batch > 0:
-            # Base: completed files
-            completed_fraction = self._completed_files_in_batch / self._total_files_in_batch
-
-            # Current file progress contribution
-            current_file_fraction = tile_progress / self._total_files_in_batch
-
-            # Time-based interpolation for smoother batch progress
-            # If we have average time per image, estimate additional progress
-            time_interpolation = 0.0
-            if self._current_avg_per_image > 0 and self._current_image_start_time > 0:
-                # How long have we been on current image?
-                time_on_current = now - self._current_image_start_time
-                # Estimate progress through current image based on time
-                time_based_progress = min(time_on_current / self._current_avg_per_image, 1.0)
-
-                # Blend tile-based and time-based progress (favor tile-based when available)
-                if tile_progress > 0:
-                    # Weight tile progress more heavily as it's more accurate
-                    blended_progress = 0.7 * tile_progress + 0.3 * time_based_progress
-                else:
-                    # No tile progress yet, use time-based
-                    blended_progress = time_based_progress
-
-                current_file_fraction = blended_progress / self._total_files_in_batch
-
-            # Smooth batch progress
-            batch_progress = completed_fraction + current_file_fraction
-            batch_value = int(batch_progress * 1000)
-            batch_value = min(batch_value, 1000)
-
-            self._batch_progress_bar.setValue(batch_value)
-
-            # Update batch progress bar format to show file count
-            files_done = self._completed_files_in_batch
-            files_total = self._total_files_in_batch
-            pct = int(batch_progress * 100)
-            self._batch_progress_bar.setFormat(f"Batch: {pct}% ({files_done}/{files_total} files)")
-
-    def _on_file_progress(self, current: int, total: int, file_path: str):
-        """Update file progress and thumbnail for current image."""
-        # Reset tile progress state for new file
-        self._last_tile_current = 0
-        self._last_tile_total = 1
-        self._last_tile_update_time = time.perf_counter()
-        self._interpolated_tile_progress = 0.0
-        self._current_image_start_time = time.perf_counter()
-
-        # Update thumbnail to show current file being processed
-        if file_path and file_path != self._thumbnail_label.get_current_path():
-            self._update_thumbnail(file_path)
-
-        # Update labels
-        file_name = Path(file_path).name if file_path else ""
-        self._progress_label.setText(f"Processing image {current}/{total}: {file_name}")
-        self._current_file_label.setText(f"Processing {current}/{total}")
-
-    def _on_file_done(self, input_path: str, output_path: str, elapsed_time: float):
-        """Handle completed file."""
-        self._completed_files_in_batch += 1
-        self._last_output_path = output_path
-
-        # Record this image's duration for smooth progress extrapolation
-        image_duration = time.perf_counter() - self._current_image_start_time
-        if image_duration > 0:
-            # Use exponential moving average for smoother estimation
-            if self._last_image_duration > 0:
-                self._last_image_duration = 0.7 * self._last_image_duration + 0.3 * image_duration
-            else:
-                self._last_image_duration = image_duration
-
-        # Update average using total elapsed time (includes all overhead)
-        total_elapsed = time.perf_counter() - self._batch_start_time
-        self._current_avg_per_image = total_elapsed / self._completed_files_in_batch
-
-        # Reset tile progress for next file (smooth timer will update bars)
-        self._interpolated_tile_progress = 0.0
-        self._last_tile_current = 0
-
-        # Add to processing log
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {os.path.basename(input_path)} -> {os.path.basename(output_path)} ({elapsed_time:.2f}s)"
-        self._log_entries.append(log_entry)
-
-        # Update display
-        self._current_file_label.setText(
-            f"Processed {self._completed_files_in_batch}/{self._total_files_in_batch}"
-        )
-        self._avg_label.setText(f"Avg per image: {self._current_avg_per_image:.2f}s")
-
-        # Update time display immediately
-        self._update_time_display()
-
-        # Progress label
-        self._progress_label.setText(f"Saved: {os.path.basename(output_path)}")
-
-    def _on_file_skipped(self, input_path: str, reason: str):
-        """Handle skipped file."""
-        # Add to processing log
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] SKIPPED: {os.path.basename(input_path)} ({reason})"
-        self._log_entries.append(log_entry)
-
-        # Update progress label briefly
-        self._progress_label.setText(f"Skipped: {os.path.basename(input_path)} ({reason})")
-
-    def _on_checkpoint_updated(self, current_index: int, remaining_files: list):
-        """Handle checkpoint update - save state for resume."""
-        self._checkpoint_index = current_index
-        self._checkpoint_files = list(remaining_files)
-        self._checkpoint_onnx = self.onnx_edit.text()
-        self._checkpoint_input_root = self.input_root
-
-        # Enable resume button if we have checkpoint data
-        if self._checkpoint_files:
-            self._resume_button.setEnabled(True)
-
     def _resume_batch(self):
         """Resume processing from last checkpoint."""
         if not self._checkpoint_files:
@@ -2097,299 +1899,6 @@ class MainWindow(QMainWindow):
                     subprocess.run(["shutdown", "-h", "+1"])
         except Exception as e:
             QMessageBox.warning(self, "Shutdown Failed", f"Failed to execute {mode}: {e}")
-
-    def _setup_tray_icon(self):
-        """Setup system tray icon for minimize to tray feature."""
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-
-        self._tray_icon = QSystemTrayIcon(self)
-        # Use application icon or default
-        icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
-        self._tray_icon.setIcon(icon)
-        self._tray_icon.setToolTip("TensorRT Upscaler v2")
-
-        # Create tray menu
-        tray_menu = QMenu()
-        show_action = QAction("Show", self)
-        show_action.triggered.connect(self._show_from_tray)
-        tray_menu.addAction(show_action)
-
-        quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(QApplication.quit)
-        tray_menu.addAction(quit_action)
-
-        self._tray_icon.setContextMenu(tray_menu)
-        self._tray_icon.activated.connect(self._on_tray_activated)
-
-    def _show_from_tray(self):
-        """Show window from tray."""
-        self.showNormal()
-        self.activateWindow()
-
-    def _on_tray_activated(self, reason):
-        """Handle tray icon activation."""
-        if reason == QSystemTrayIcon.DoubleClick:
-            self._show_from_tray()
-
-    def changeEvent(self, event):
-        """Handle window state changes for minimize to tray."""
-        if event.type() == QEvent.WindowStateChange:
-            if self.isMinimized() and self.config.minimize_to_tray and self._tray_icon:
-                # Hide to tray
-                QTimer.singleShot(0, self._hide_to_tray)
-        super().changeEvent(event)
-
-    def _hide_to_tray(self):
-        """Hide window to system tray."""
-        self.hide()
-        if self._tray_icon:
-            self._tray_icon.show()
-            self._tray_icon.showMessage(
-                "TensorRT Upscaler",
-                "Minimized to tray. Double-click to restore.",
-                QSystemTrayIcon.Information,
-                2000
-            )
-
-    def _setup_keyboard_shortcuts(self):
-        """Setup global keyboard shortcuts."""
-        if not self.config.shortcuts_enabled:
-            return
-
-        # Start/Stop processing - Enter/Escape
-        start_shortcut = QShortcut(QKeySequence(Qt.Key_Return), self)
-        start_shortcut.activated.connect(self._shortcut_start)
-
-        cancel_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
-        cancel_shortcut.activated.connect(self._shortcut_cancel)
-
-        # File operations
-        # Ctrl+O - Open file
-        open_file_shortcut = QShortcut(QKeySequence("Ctrl+I"), self)
-        open_file_shortcut.activated.connect(self._browse_input_file)
-
-        # Ctrl+Shift+O - Open folder
-        open_folder_shortcut = QShortcut(QKeySequence("Ctrl+Shift+I"), self)
-        open_folder_shortcut.activated.connect(self._browse_input_folder)
-
-        # Ctrl+E - Open output folder
-        open_output_shortcut = QShortcut(QKeySequence("Ctrl+E"), self)
-        open_output_shortcut.activated.connect(self._open_output_folder)
-
-        # Ctrl+Shift+C - Copy output path
-        copy_path_shortcut = QShortcut(QKeySequence("Ctrl+Shift+C"), self)
-        copy_path_shortcut.activated.connect(self._copy_output_path)
-
-        # Ctrl+L - Open log
-        log_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
-        log_shortcut.activated.connect(self._open_log_dialog)
-
-        # Ctrl+, - Open settings
-        settings_shortcut = QShortcut(QKeySequence("Ctrl+,"), self)
-        settings_shortcut.activated.connect(self._open_settings_dialog)
-
-        # Ctrl+W - Toggle watch folder
-        watch_shortcut = QShortcut(QKeySequence("Ctrl+W"), self)
-        watch_shortcut.activated.connect(self._toggle_watch_folder)
-
-        # Ctrl+V - Paste image from clipboard (global shortcut)
-        paste_shortcut = QShortcut(QKeySequence("Ctrl+V"), self)
-        paste_shortcut.activated.connect(self._handle_clipboard_paste)
-
-        # Delete - Remove selected files from list
-        delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self)
-        delete_shortcut.activated.connect(self._remove_selected_files)
-
-        # Ctrl+Delete - Clear file list
-        clear_shortcut = QShortcut(QKeySequence("Ctrl+Delete"), self)
-        clear_shortcut.activated.connect(self._clear_file_list)
-
-        # F5 - Refresh/reload input
-        refresh_shortcut = QShortcut(QKeySequence(Qt.Key_F5), self)
-        refresh_shortcut.activated.connect(self._refresh_input)
-
-        # Ctrl+T - Toggle always on top
-        always_on_top_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
-        always_on_top_shortcut.activated.connect(self._toggle_always_on_top)
-
-        # Z - Toggle zoom on preview
-        zoom_shortcut = QShortcut(QKeySequence(Qt.Key_Z), self)
-        zoom_shortcut.activated.connect(self._toggle_zoom)
-
-    def _shortcut_start(self):
-        """Handle Enter shortcut - start if not running."""
-        if self._start_button.isEnabled():
-            self._start_upscaling()
-
-    def _shortcut_cancel(self):
-        """Handle Escape shortcut - cancel if running."""
-        if self._cancel_button.isEnabled():
-            self._cancel()
-
-    def _refresh_input(self):
-        """Refresh input - re-collect files from current path."""
-        input_text = self._input_edit.text()
-        if not input_text or "files" in input_text:
-            # Multiple files already loaded, nothing to refresh
-            return
-        if os.path.exists(input_text):
-            self._set_inputs_from_paths([Path(input_text)])
-
-    def _toggle_always_on_top(self):
-        """Toggle always on top setting."""
-        self.config.always_on_top = not self.config.always_on_top
-        save_config()
-        self._apply_window_flags()
-        status = "ON" if self.config.always_on_top else "OFF"
-        self._progress_label.setText(f"Always on top: {status}")
-
-    # ===== Watch Folder Mode =====
-
-    def _toggle_watch_folder(self):
-        """Toggle watch folder mode."""
-        if self._watch_folder:
-            self._stop_watch_folder()
-        else:
-            self._start_watch_folder()
-
-    def _start_watch_folder(self):
-        """Start watching a folder for new images."""
-        # Get folder to watch
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select Folder to Watch",
-            self._input_edit.text() or ""
-        )
-        if not folder:
-            self._watch_button.setChecked(False)
-            return
-
-        # Validate ONNX model is set
-        onnx_path = self.onnx_edit.text()
-        if self._upscale_check.isChecked() and (not onnx_path or not os.path.exists(onnx_path)):
-            QMessageBox.warning(self, "No Model", "Please select a valid ONNX model before starting watch mode.")
-            self._watch_button.setChecked(False)
-            return
-
-        # Setup file watcher
-        self._watch_folder = folder
-        self._file_watcher = QFileSystemWatcher([folder], self)
-        self._file_watcher.directoryChanged.connect(self._on_watch_folder_changed)
-
-        # Setup delay timer for debouncing file changes
-        self._watch_delay_timer = QTimer(self)
-        self._watch_delay_timer.setSingleShot(True)
-        self._watch_delay_timer.timeout.connect(self._process_watch_pending)
-
-        # Update UI
-        self._watch_button.setChecked(True)
-        self._watch_button.setText("Stop Watch")
-        self._progress_label.setText(f"Watching: {folder}")
-
-        # Get initial file list to track new additions
-        self._watch_existing_files = set(
-            str(p) for p in Path(folder).glob("*")
-            if p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-
-        # Add to log
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        self._log_entries.append(f"[{timestamp}] Started watching: {folder}")
-
-    def _stop_watch_folder(self):
-        """Stop watching folder."""
-        if self._file_watcher:
-            self._file_watcher.deleteLater()
-            self._file_watcher = None
-
-        if self._watch_delay_timer:
-            self._watch_delay_timer.stop()
-            self._watch_delay_timer = None
-
-        self._watch_folder = None
-        self._watch_pending_files.clear()
-        self._watch_processing = False
-
-        # Update UI
-        self._watch_button.setChecked(False)
-        self._watch_button.setText("Watch Folder")
-        self._progress_label.setText("Watch mode stopped")
-
-        # Add to log
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        self._log_entries.append(f"[{timestamp}] Stopped watch mode")
-
-    def _on_watch_folder_changed(self, path: str):
-        """Handle folder content change."""
-        if not self._watch_folder:
-            return
-
-        # Find new files
-        current_files = set(
-            str(p) for p in Path(self._watch_folder).glob("*")
-            if p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-
-        new_files = current_files - self._watch_existing_files
-        self._watch_existing_files = current_files
-
-        if new_files:
-            # Add to pending queue
-            for f in sorted(new_files, key=natural_sort_key):
-                if f not in self._watch_pending_files:
-                    self._watch_pending_files.append(f)
-
-            # Start/restart delay timer (wait for file to finish writing)
-            if self._watch_delay_timer:
-                self._watch_delay_timer.start(1000)  # 1 second delay
-
-    def _process_watch_pending(self):
-        """Process pending files from watch folder."""
-        if not self._watch_pending_files or self._watch_processing:
-            return
-
-        if self.worker and self.worker.isRunning():
-            # Already processing, wait for completion
-            return
-
-        # Get files that are ready (fully written)
-        ready_files = []
-        still_pending = []
-
-        for file_path in self._watch_pending_files:
-            if self._is_file_ready(file_path):
-                ready_files.append(file_path)
-            else:
-                still_pending.append(file_path)
-
-        self._watch_pending_files = still_pending
-
-        if ready_files:
-            self._watch_processing = True
-            # Set these as input and start processing
-            self.files = ready_files
-            self._update_file_list_ui()
-            self._input_edit.setText(f"{len(ready_files)} new files")
-
-            # Start processing
-            self._start_upscaling()
-
-    def _is_file_ready(self, file_path: str) -> bool:
-        """Check if file is ready (not still being written)."""
-        try:
-            # Try to open file exclusively to check if it's still being written
-            if not os.path.exists(file_path):
-                return False
-
-            # Check file size is stable
-            size1 = os.path.getsize(file_path)
-            time.sleep(0.1)
-            size2 = os.path.getsize(file_path)
-
-            return size1 == size2 and size1 > 0
-        except (OSError, PermissionError):
-            return False
 
     def closeEvent(self, event):
         """Save settings on close."""

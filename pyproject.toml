@@ -56,7 +56,7 @@ dev = [
 tensorrt-upscaler = "tensorrt_upscaler.cli:main"
 
 [project.gui-scripts]
-tensorrt-upscaler-gui = "tensorrt_upscaler.gui:main"
+tensorrt-upscaler-gui = "tensorrt_upscaler.main_window:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

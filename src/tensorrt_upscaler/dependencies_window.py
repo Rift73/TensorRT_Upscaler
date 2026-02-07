@@ -189,63 +189,112 @@ class InstallWorker(QThread):
         """Request cancellation."""
         self._cancelled = True
 
+    def _check_packages(self, packages: list[str], label: str = "") -> list[str]:
+        """Check which packages need installation, return those not yet installed."""
+        to_install = []
+        for pkg in packages:
+            pkg_name = pkg.split(">=")[0].split("==")[0]
+            if _is_package_installed(pkg):
+                self.progress_signal.emit(f"  {pkg_name}: already installed")
+            else:
+                to_install.append(pkg)
+                suffix = f" ({label})" if label else ""
+                self.progress_signal.emit(f"  {pkg_name}: needs installation{suffix}")
+        return to_install
+
+    def _install_package_group(
+        self, packages: list[str], header: str,
+        current_step: int, total_steps: int,
+        notes: list[str] | None = None,
+        fail_note: str = "",
+    ) -> int:
+        """Install a group of pip packages. Returns updated current_step, or -1 if cancelled."""
+        if not packages:
+            return current_step
+
+        self.progress_signal.emit(f"\n=== {header} ===\n")
+        if notes:
+            for note in notes:
+                self.progress_signal.emit(note)
+
+        for pkg in packages:
+            if self._cancelled:
+                self.finished_signal.emit(False, "Installation cancelled.")
+                return -1
+            current_step += 1
+            pkg_name = pkg.split(">=")[0].split("==")[0]
+            self.status_signal.emit(f"Installing {pkg_name}...", current_step, total_steps)
+            self.progress_signal.emit(f"Installing {pkg}...")
+            success, msg = self._install_pip_package(pkg)
+            self.progress_signal.emit(msg)
+            if not success:
+                self.progress_signal.emit(f"Warning: Failed to install {pkg}")
+                if fail_note:
+                    self.progress_signal.emit(f"  {fail_note}")
+
+        return current_step
+
+    def _install_external_tools(
+        self, tools: list, current_step: int, total_steps: int,
+    ) -> int:
+        """Download and install external tools. Returns updated current_step, or -1 if cancelled."""
+        if not tools:
+            return current_step
+
+        self.progress_signal.emit("\n=== Installing external tools ===\n")
+        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+
+        paths_to_add: list[Path] = []
+
+        for name, url, extract_type, path_subdir in tools:
+            if self._cancelled:
+                self.finished_signal.emit(False, "Installation cancelled.")
+                return -1
+            current_step += 1
+            dest_path = TOOLS_DIR / path_subdir if path_subdir else TOOLS_DIR
+            self.status_signal.emit(f"Downloading {name}...", current_step, total_steps)
+            self.progress_signal.emit(f"Downloading {name}...")
+            self.progress_signal.emit(f"  URL: {url}")
+            self.progress_signal.emit(f"  Destination: {dest_path}")
+            success = self._download_and_extract_tool(name, url, extract_type)
+            if success:
+                self.progress_signal.emit(f"  {name} installed successfully")
+                paths_to_add.append(TOOLS_DIR / path_subdir if path_subdir else TOOLS_DIR)
+            else:
+                self.progress_signal.emit(f"  Warning: Failed to install {name}")
+
+        # Add all tool directories to PATH
+        if paths_to_add:
+            self.progress_signal.emit("\nAdding tools directories to PATH...")
+            for path_dir in paths_to_add:
+                if path_dir.exists():
+                    success = self._add_to_path(path_dir)
+                    if success:
+                        self.progress_signal.emit(f"  Added {path_dir} to user PATH")
+                    else:
+                        self.progress_signal.emit(f"  Warning: Could not add {path_dir} to PATH")
+                else:
+                    self.progress_signal.emit(f"  Warning: Path does not exist: {path_dir}")
+
+        return current_step
+
     def run(self) -> None:
         """Run the installation process."""
         try:
-            # First, check what's already installed
+            # Check what's already installed
             self.progress_signal.emit("Checking installed packages...\n")
 
-            pip_to_install = []
-            cuda_to_install = []
-            dml_to_install = []
+            pip_to_install = self._check_packages(PIP_PACKAGES) if self._install_pip else []
+            cuda_to_install = self._check_packages(CUDA_PACKAGES) if self._install_tensorrt else []
+            dml_to_install = self._check_packages(DIRECTML_PACKAGES) if self._install_directml else []
+
             pytorch_to_install = []
-            tools_to_install = []
-
-            if self._install_pip:
-                for pkg in PIP_PACKAGES:
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    if _is_package_installed(pkg):
-                        self.progress_signal.emit(f"  {pkg_name}: already installed")
-                    else:
-                        pip_to_install.append(pkg)
-                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
-
-            if self._install_tensorrt:
-                for pkg in CUDA_PACKAGES:
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    if _is_package_installed(pkg):
-                        self.progress_signal.emit(f"  {pkg_name}: already installed")
-                    else:
-                        cuda_to_install.append(pkg)
-                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
-
-            if self._install_directml:
-                for pkg in DIRECTML_PACKAGES:
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    if _is_package_installed(pkg):
-                        self.progress_signal.emit(f"  {pkg_name}: already installed")
-                    else:
-                        dml_to_install.append(pkg)
-                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
-
             if self._install_pytorch:
-                for pkg in PYTORCH_PACKAGES:
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    if _is_package_installed(pkg):
-                        self.progress_signal.emit(f"  {pkg_name}: already installed")
-                    else:
-                        pytorch_to_install.append(pkg)
-                        self.progress_signal.emit(f"  {pkg_name}: needs installation")
-
+                pytorch_to_install = self._check_packages(PYTORCH_PACKAGES)
             if self._install_pytorch_optional:
-                for pkg in PYTORCH_OPTIONAL_PACKAGES:
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    if _is_package_installed(pkg):
-                        self.progress_signal.emit(f"  {pkg_name}: already installed")
-                    else:
-                        pytorch_to_install.append(pkg)
-                        self.progress_signal.emit(f"  {pkg_name}: needs installation (optional)")
+                pytorch_to_install += self._check_packages(PYTORCH_OPTIONAL_PACKAGES, label="optional")
 
+            tools_to_install = []
             if self._install_tools:
                 for name, url, extract_type, path_subdir in EXTERNAL_TOOLS:
                     if _is_tool_installed(name):
@@ -254,8 +303,10 @@ class InstallWorker(QThread):
                         tools_to_install.append((name, url, extract_type, path_subdir))
                         self.progress_signal.emit(f"  {name}: needs installation")
 
-            # Calculate total steps (only packages that need installation)
-            total_steps = len(pip_to_install) + len(cuda_to_install) + len(dml_to_install) + len(pytorch_to_install) + len(tools_to_install)
+            total_steps = (
+                len(pip_to_install) + len(cuda_to_install) + len(dml_to_install)
+                + len(pytorch_to_install) + len(tools_to_install)
+            )
 
             if total_steps == 0:
                 self.progress_signal.emit("\n=== All dependencies already installed! ===\n")
@@ -263,117 +314,35 @@ class InstallWorker(QThread):
                 return
 
             self.progress_signal.emit(f"\n{total_steps} package(s) to install...\n")
-            current_step = 0
+            step = 0
 
-            # Install pip packages
-            if pip_to_install:
-                self.progress_signal.emit("\n=== Installing Python packages ===\n")
-                for pkg in pip_to_install:
-                    if self._cancelled:
-                        self.finished_signal.emit(False, "Installation cancelled.")
-                        return
-                    current_step += 1
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    self.status_signal.emit(f"Installing {pkg_name}...", current_step, total_steps)
-                    self.progress_signal.emit(f"Installing {pkg}...")
-                    success, msg = self._install_pip_package(pkg)
-                    self.progress_signal.emit(msg)
-                    if not success:
-                        self.progress_signal.emit(f"Warning: Failed to install {pkg}")
+            step = self._install_package_group(pip_to_install, "Installing Python packages", step, total_steps)
+            if step < 0: return
 
-            # Install CUDA/TensorRT packages
-            if cuda_to_install:
-                self.progress_signal.emit("\n=== Installing CUDA/TensorRT packages ===\n")
-                self.progress_signal.emit("Note: TensorRT requires NVIDIA GPU and CUDA toolkit installed.\n")
-                for pkg in cuda_to_install:
-                    if self._cancelled:
-                        self.finished_signal.emit(False, "Installation cancelled.")
-                        return
-                    current_step += 1
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    self.status_signal.emit(f"Installing {pkg_name}...", current_step, total_steps)
-                    self.progress_signal.emit(f"Installing {pkg}...")
-                    success, msg = self._install_pip_package(pkg)
-                    self.progress_signal.emit(msg)
-                    if not success:
-                        self.progress_signal.emit(f"Warning: Failed to install {pkg}")
-                        self.progress_signal.emit("  You may need to install TensorRT manually from NVIDIA.")
+            step = self._install_package_group(
+                cuda_to_install, "Installing CUDA/TensorRT packages", step, total_steps,
+                notes=["Note: TensorRT requires NVIDIA GPU and CUDA toolkit installed.\n"],
+                fail_note="You may need to install TensorRT manually from NVIDIA.",
+            )
+            if step < 0: return
 
-            # Install DirectML packages
-            if dml_to_install:
-                self.progress_signal.emit("\n=== Installing DirectML packages ===\n")
-                self.progress_signal.emit("Note: DirectML works with any DirectX 12 GPU (AMD, Intel, NVIDIA).\n")
-                for pkg in dml_to_install:
-                    if self._cancelled:
-                        self.finished_signal.emit(False, "Installation cancelled.")
-                        return
-                    current_step += 1
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    self.status_signal.emit(f"Installing {pkg_name}...", current_step, total_steps)
-                    self.progress_signal.emit(f"Installing {pkg}...")
-                    success, msg = self._install_pip_package(pkg)
-                    self.progress_signal.emit(msg)
-                    if not success:
-                        self.progress_signal.emit(f"Warning: Failed to install {pkg}")
+            step = self._install_package_group(
+                dml_to_install, "Installing DirectML packages", step, total_steps,
+                notes=["Note: DirectML works with any DirectX 12 GPU (AMD, Intel, NVIDIA).\n"],
+            )
+            if step < 0: return
 
-            # Install PyTorch packages (spandrel, safetensors, etc.)
-            if pytorch_to_install:
-                self.progress_signal.emit("\n=== Installing PyTorch support packages ===\n")
-                self.progress_signal.emit("Note: PyTorch itself must be installed separately with your CUDA version.\n")
-                self.progress_signal.emit("      Visit https://pytorch.org/get-started/locally/ for instructions.\n")
-                for pkg in pytorch_to_install:
-                    if self._cancelled:
-                        self.finished_signal.emit(False, "Installation cancelled.")
-                        return
-                    current_step += 1
-                    pkg_name = pkg.split(">=")[0].split("==")[0]
-                    self.status_signal.emit(f"Installing {pkg_name}...", current_step, total_steps)
-                    self.progress_signal.emit(f"Installing {pkg}...")
-                    success, msg = self._install_pip_package(pkg)
-                    self.progress_signal.emit(msg)
-                    if not success:
-                        self.progress_signal.emit(f"Warning: Failed to install {pkg}")
+            step = self._install_package_group(
+                pytorch_to_install, "Installing PyTorch support packages", step, total_steps,
+                notes=[
+                    "Note: PyTorch itself must be installed separately with your CUDA version.\n",
+                    "      Visit https://pytorch.org/get-started/locally/ for instructions.\n",
+                ],
+            )
+            if step < 0: return
 
-            # Install external tools
-            if tools_to_install:
-                self.progress_signal.emit("\n=== Installing external tools ===\n")
-                TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-
-                paths_to_add: list[Path] = []
-
-                for name, url, extract_type, path_subdir in tools_to_install:
-                    if self._cancelled:
-                        self.finished_signal.emit(False, "Installation cancelled.")
-                        return
-                    current_step += 1
-                    dest_path = TOOLS_DIR / path_subdir if path_subdir else TOOLS_DIR
-                    self.status_signal.emit(f"Downloading {name}...", current_step, total_steps)
-                    self.progress_signal.emit(f"Downloading {name}...")
-                    self.progress_signal.emit(f"  URL: {url}")
-                    self.progress_signal.emit(f"  Destination: {dest_path}")
-                    success = self._download_and_extract_tool(name, url, extract_type)
-                    if success:
-                        self.progress_signal.emit(f"  {name} installed successfully")
-                        # Track the path to add
-                        if path_subdir:
-                            paths_to_add.append(TOOLS_DIR / path_subdir)
-                        else:
-                            paths_to_add.append(TOOLS_DIR)
-                    else:
-                        self.progress_signal.emit(f"  Warning: Failed to install {name}")
-
-                # Add all tool directories to PATH
-                if paths_to_add:
-                    self.progress_signal.emit("\nAdding tools directories to PATH...")
-                    for path_dir in paths_to_add:
-                        if path_dir.exists():
-                            success = self._add_to_path(path_dir)
-                            if success:
-                                self.progress_signal.emit(f"  Added {path_dir} to user PATH")
-                            else:
-                                self.progress_signal.emit(f"  Warning: Could not add {path_dir} to PATH")
-                        else:
-                            self.progress_signal.emit(f"  Warning: Path does not exist: {path_dir}")
+            step = self._install_external_tools(tools_to_install, step, total_steps)
+            if step < 0: return
 
             self.progress_signal.emit("\n=== Installation complete ===\n")
             self.finished_signal.emit(True, "All dependencies installed successfully!")

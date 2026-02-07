@@ -19,6 +19,20 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", "
 ANIMATED_EXTENSIONS = {".gif", ".webp", ".png"}  # PNG can be APNG
 
 
+def detect_model_scale(onnx_path: str, default: int = 4) -> int:
+    """Detect model scale from filename (e.g., HAT_L_2x, RealESRGAN_4x).
+
+    Returns detected scale (1, 2, 4, 8) or *default* if not found.
+    """
+    basename = os.path.basename(onnx_path).lower()
+    for scale in [8, 4, 2, 1]:
+        patterns = [f"{scale}x_", f"_{scale}x", f"x{scale}", f"-{scale}x", f"{scale}x."]
+        for pattern in patterns:
+            if pattern in basename:
+                return scale
+    return default
+
+
 def natural_sort_key(s):
     """
     Key function for natural sorting (file2 before file10).

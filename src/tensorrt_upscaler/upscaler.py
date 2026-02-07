@@ -19,6 +19,7 @@ from typing import Optional, Tuple, Callable, Dict, List
 from concurrent.futures import ThreadPoolExecutor
 
 from .engine import TensorRTEngine
+from .engine_base import InferenceEngine
 from .dml_engine import DirectMLEngine, is_directml_available
 from .pytorch_engine import PyTorchEngine, is_pytorch_available
 from .fast_io import load_image_fast, save_image_fast, CV2_AVAILABLE
@@ -157,6 +158,7 @@ class ImageUpscaler:
             pytorch_cudnn_benchmark: Enable cuDNN benchmark for optimal conv algorithms
             pytorch_torch_compile: torch.compile mode (off/default/reduce-overhead/max-autotune)
         """
+        self.engine: InferenceEngine  # set below per backend
         self.tile_w, self.tile_h = tile_size
         self.overlap = overlap
         self.backend = backend

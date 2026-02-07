@@ -8,9 +8,8 @@ import sys
 from pathlib import Path
 
 from .upscaler import ImageUpscaler
-from .animated import is_animated, AnimatedUpscaler
-
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
+from .animated import AnimatedUpscaler
+from .utils import IMAGE_EXTENSIONS, is_animated
 
 
 def print_progress(current: int, total: int):

@@ -51,6 +51,16 @@ if NUMBA_AVAILABLE:
         pi_x = 3.141592653589793 * ax
         return (a * np.sin(pi_x) * np.sin(pi_x / a)) / (pi_x * pi_x)
 
+    @njit(fastmath=True, cache=True)
+    def _catmull_rom_kernel_numba(x):
+        """Numba JIT Catmull-Rom kernel (B=0, C=0.5)."""
+        ax = abs(x)
+        if ax <= 1.0:
+            return 1.5 * (ax ** 3) - 2.5 * (ax ** 2) + 1.0
+        elif ax <= 2.0:
+            return -0.5 * (ax ** 3) + 2.5 * (ax ** 2) - 4.0 * ax + 2.0
+        return 0.0
+
     @njit(parallel=True, fastmath=True, cache=True)
     def _resize_1d_hermite_numba(data, new_size, axis):
         """Numba JIT 1D Hermite resize."""
@@ -105,6 +115,65 @@ if NUMBA_AVAILABLE:
                             # Don't scale distances - use fractional distance to source pixel
                             dist = (out_coord - k) / effective_radius
                             w = _hermite_kernel_numba(dist)
+                            idx = max(0, min(old_size - 1, k))
+                            val += w * data[i, idx, c]
+                            weight_sum += w
+                        if weight_sum > 0:
+                            output[i, j, c] = val / weight_sum
+
+        return output
+
+    @njit(parallel=True, fastmath=True, cache=True)
+    def _resize_1d_catmull_rom_numba(data, new_size, axis):
+        """Numba JIT 1D Catmull-Rom resize."""
+        if axis == 0:
+            old_size = data.shape[0]
+            out_shape = (new_size, data.shape[1], data.shape[2])
+        else:
+            old_size = data.shape[1]
+            out_shape = (data.shape[0], new_size, data.shape[2])
+
+        output = np.zeros(out_shape, dtype=np.float32)
+        scale = new_size / old_size
+        kernel_radius = 2.0  # Catmull-Rom has radius 2
+
+        if scale < 1.0:
+            # Downscaling: widen window
+            effective_radius = kernel_radius / scale
+        else:
+            effective_radius = kernel_radius
+
+        if axis == 0:
+            for i in prange(new_size):
+                out_coord = (i + 0.5) / scale - 0.5
+                left = int(np.floor(out_coord - effective_radius))
+                right = int(np.ceil(out_coord + effective_radius))
+
+                for j in range(data.shape[1]):
+                    for c in range(data.shape[2]):
+                        val = 0.0
+                        weight_sum = 0.0
+                        for k in range(left, right + 1):
+                            dist = (out_coord - k) / effective_radius * kernel_radius
+                            w = _catmull_rom_kernel_numba(dist)
+                            idx = max(0, min(old_size - 1, k))
+                            val += w * data[idx, j, c]
+                            weight_sum += w
+                        if weight_sum > 0:
+                            output[i, j, c] = val / weight_sum
+        else:
+            for j in prange(new_size):
+                out_coord = (j + 0.5) / scale - 0.5
+                left = int(np.floor(out_coord - effective_radius))
+                right = int(np.ceil(out_coord + effective_radius))
+
+                for i in range(data.shape[0]):
+                    for c in range(data.shape[2]):
+                        val = 0.0
+                        weight_sum = 0.0
+                        for k in range(left, right + 1):
+                            dist = (out_coord - k) / effective_radius * kernel_radius
+                            w = _catmull_rom_kernel_numba(dist)
                             idx = max(0, min(old_size - 1, k))
                             val += w * data[i, idx, c]
                             weight_sum += w
@@ -327,10 +396,47 @@ def resize_lanczos(
     return np.clip(result, 0.0, 1.0)
 
 
+def resize_catmull_rom(
+    image: np.ndarray,
+    size: Tuple[int, int],
+) -> np.ndarray:
+    """
+    Resize image using Catmull-Rom (Cubic B=0, C=0.5) interpolation.
+
+    Args:
+        image: Input image (H, W, C) or (H, W), float32 in [0, 1]
+        size: Target size as (width, height)
+
+    Returns:
+        Resized image
+    """
+    target_w, target_h = size
+
+    # Ensure 3D array
+    if image.ndim == 2:
+        image = image[:, :, np.newaxis]
+
+    # Ensure float32
+    if image.dtype != np.float32:
+        image = image.astype(np.float32)
+
+    # Use Numba JIT version if available (5-10x faster)
+    if NUMBA_AVAILABLE:
+        result = _resize_1d_catmull_rom_numba(image, target_h, 0)
+        result = _resize_1d_catmull_rom_numba(result, target_w, 1)
+        return np.clip(result, 0.0, 1.0)
+
+    # Fall back to NumPy implementation
+    result = _resize_1d(image, target_h, _catmull_rom_kernel, 2.0, axis=0)
+    result = _resize_1d(result, target_w, _catmull_rom_kernel, 2.0, axis=1)
+
+    return np.clip(result, 0.0, 1.0)
+
+
 def resize_pil(
     image: Image.Image,
     size: Tuple[int, int],
-    kernel: Literal["lanczos", "hermite", "bicubic"] = "lanczos",
+    kernel: Literal["lanczos", "hermite", "bicubic", "catmull-rom"] = "lanczos",
 ) -> Image.Image:
     """
     Resize a PIL Image using the specified kernel.
@@ -338,7 +444,7 @@ def resize_pil(
     Args:
         image: Input PIL Image
         size: Target size as (width, height)
-        kernel: "lanczos", "hermite", or "bicubic"
+        kernel: "lanczos", "hermite", "bicubic", or "catmull-rom"
 
     Returns:
         Resized PIL Image
@@ -351,8 +457,9 @@ def resize_pil(
         # Use Pillow's built-in Bicubic (Catmull-Rom)
         return image.resize(size, Image.BICUBIC)
 
-    elif kernel == "hermite":
-        # Use our custom Hermite implementation
+    elif kernel == "hermite" or kernel == "catmull-rom":
+        # Use our custom implementation
+        resize_fn = resize_hermite if kernel == "hermite" else resize_catmull_rom
         has_alpha = image.mode == 'RGBA'
 
         if has_alpha:
@@ -365,18 +472,18 @@ def resize_pil(
         # Convert to numpy [0, 1]
         arr = np.array(rgb).astype(np.float32) / 255.0
 
-        # Resize with Hermite
-        resized = resize_hermite(arr, size)
+        # Resize
+        resized = resize_fn(arr, size)
 
         # Convert back
         resized = (resized * 255.0).clip(0, 255).astype(np.uint8)
         result = Image.fromarray(resized, mode='RGB')
 
         if has_alpha:
-            # Resize alpha with Hermite too
+            # Resize alpha too
             alpha_arr = np.array(alpha).astype(np.float32) / 255.0
             alpha_arr = alpha_arr[:, :, np.newaxis]  # Add channel dim
-            alpha_resized = resize_hermite(alpha_arr, size)
+            alpha_resized = resize_fn(alpha_arr, size)
             alpha_resized = (alpha_resized[:, :, 0] * 255.0).clip(0, 255).astype(np.uint8)
             alpha_pil = Image.fromarray(alpha_resized, mode='L')
             result.putalpha(alpha_pil)
@@ -394,6 +501,7 @@ def compute_scaled_size(
     target_w: int = 1920,
     target_h: int = 1080,
     keep_aspect: bool = True,
+    scale_factor: float = 2.0,
 ) -> Tuple[int, int]:
     """
     Compute target size based on mode.
@@ -401,16 +509,21 @@ def compute_scaled_size(
     Args:
         orig_w: Original width
         orig_h: Original height
-        mode: "width", "height", or "2x"
+        mode: "width", "height", "scale_factor", or "2x" (legacy)
         target_w: Target width (used when mode="width")
         target_h: Target height (used when mode="height")
         keep_aspect: Whether to maintain aspect ratio
+        scale_factor: Scale factor for downscaling (used when mode="scale_factor")
 
     Returns:
         (width, height) tuple
     """
-    if mode == "2x":
-        return (orig_w // 2, orig_h // 2)
+    if mode == "scale_factor" or mode == "2x":
+        # Use scale_factor for new mode, default 2.0 handles legacy "2x" mode
+        factor = scale_factor if mode == "scale_factor" else 2.0
+        new_w = max(1, int(orig_w / factor))
+        new_h = max(1, int(orig_h / factor))
+        return (new_w, new_h)
 
     elif mode == "width":
         new_w = target_w
@@ -435,7 +548,7 @@ def compute_scaled_size(
 def resize_array(
     img: np.ndarray,
     size: Tuple[int, int],
-    kernel: Literal["lanczos", "hermite", "bicubic"] = "lanczos",
+    kernel: Literal["lanczos", "hermite", "bicubic", "catmull-rom"] = "lanczos",
     has_alpha: bool = False,
 ) -> np.ndarray:
     """
@@ -444,7 +557,7 @@ def resize_array(
     Args:
         img: Input image as numpy array (H, W, C) in [0, 1] range
         size: Target size as (width, height)
-        kernel: "lanczos", "hermite", or "bicubic"
+        kernel: "lanczos", "hermite", "bicubic", or "catmull-rom"
         has_alpha: Whether image has alpha channel (4 channels)
 
     Returns:
@@ -468,6 +581,14 @@ def resize_array(
                 return np.concatenate([rgb, alpha], axis=2)
             else:
                 return resize_hermite(img[:, :, :3], size)
+        elif kernel == "catmull-rom":
+            # Use our custom Catmull-Rom implementation
+            if has_alpha and img.shape[2] == 4:
+                rgb = resize_catmull_rom(img[:, :, :3], size)
+                alpha = resize_catmull_rom(img[:, :, 3:4], size)
+                return np.concatenate([rgb, alpha], axis=2)
+            else:
+                return resize_catmull_rom(img[:, :, :3], size)
         else:
             interp = cv2.INTER_LANCZOS4
 
@@ -480,6 +601,8 @@ def resize_array(
         # Fall back to our implementation
         if kernel == "hermite":
             resize_fn = resize_hermite
+        elif kernel == "catmull-rom":
+            resize_fn = resize_catmull_rom
         else:
             resize_fn = resize_lanczos
 

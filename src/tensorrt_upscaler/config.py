@@ -65,10 +65,11 @@ class Config:
     # Custom resolution (#20-25)
     custom_res_enabled: bool = False
     custom_res_keep_aspect: bool = True
-    custom_res_mode: str = "width"  # width, height, 2x
+    custom_res_mode: str = "width"  # width, height, scale_factor
     custom_res_width: int = 1920
     custom_res_height: int = 1080
-    custom_res_kernel: str = "lanczos"  # lanczos, hermite
+    custom_res_kernel: str = "lanczos"  # lanczos, hermite, catmull-rom
+    custom_res_scale_factor: float = 2.0
 
     # Secondary output (#26-30)
     secondary_enabled: bool = False
@@ -76,6 +77,7 @@ class Config:
     secondary_width: int = 1920
     secondary_height: int = 1080
     secondary_kernel: str = "lanczos"
+    secondary_scale_factor: float = 2.0
 
     # Pre-scale (#31-35)
     prescale_enabled: bool = False
@@ -83,6 +85,7 @@ class Config:
     prescale_width: int = 1920
     prescale_height: int = 1080
     prescale_kernel: str = "lanczos"
+    prescale_scale_factor: float = 2.0
 
     # Animated output (#36-46)
     animated_format: str = "gif"  # gif, webp, avif, apng

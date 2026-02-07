@@ -109,13 +109,43 @@ result.save("output.png")
 
 ```
 src/tensorrt_upscaler/
-├── engine.py      # TensorRT engine building and inference
-├── upscaler.py    # Tiling, blending, alpha handling
-├── animated.py    # GIF/WebP/APNG processing
-├── gui.py         # PySide6 interface
-├── cli.py         # Command-line interface
-├── dialogs.py     # Settings, comparison, crop dialogs
-└── theme.py       # Dark/light themes
+├── main_window.py        # PySide6 main GUI window
+├── cli.py                # Command-line interface
+├── engine.py             # TensorRT engine building and inference
+├── engine_base.py        # InferenceEngine Protocol (shared interface)
+├── dml_engine.py         # DirectML/ONNX Runtime backend
+├── pytorch_engine.py     # PyTorch/Spandrel backend
+├── upscaler.py           # Tiled upscaling with blending
+├── animated.py           # GIF/WebP/APNG processing
+├── config.py             # Configuration (Windows Registry)
+├── fast_io.py            # Fast image I/O (fpng, OpenCV)
+├── resize.py             # Resize kernels (Hermite, Lanczos, Catmull-Rom)
+├── sharpening.py         # CAS/Adaptive sharpening
+├── theme.py              # Dark/Holo themes
+├── utils.py              # Utility functions
+├── web_extractor.py      # Web image extraction (Playwright)
+├── dependencies_window.py # Dependencies installer GUI
+├── dialogs/              # Dialog windows (modular)
+│   ├── resolution.py     # Custom resolution settings
+│   ├── pytorch_options.py # PyTorch options
+│   ├── tensorrt_options.py # TensorRT options
+│   ├── web_image_dialog.py # Web image extraction
+│   ├── animated_output.py # Animated format settings
+│   ├── png_options.py    # PNG optimization settings
+│   ├── settings.py       # General settings & presets
+│   ├── notifications.py  # Notifications & window behavior
+│   ├── log.py            # Processing log
+│   ├── model_queue.py    # Multi-model queue
+│   ├── comparison.py     # Before/after split comparison
+│   ├── crop_preview.py   # Crop region preview
+│   └── sharpen.py        # Sharpen settings
+└── gui/                  # GUI components
+    ├── widgets.py        # DropLineEdit, ThumbnailLabel
+    ├── workers.py        # UpscaleWorker, ClipboardWorker
+    ├── tray_manager.py   # System tray mixin
+    ├── shortcuts.py      # Keyboard shortcuts mixin
+    ├── watch_folder.py   # Watch folder mode mixin
+    └── progress_tracker.py # Progress bar & timing mixin
 ```
 
 ## License

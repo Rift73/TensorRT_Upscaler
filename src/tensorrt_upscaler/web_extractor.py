@@ -233,26 +233,23 @@ class WebImageExtractor:
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(500)
 
-    def _extract_images_from_page(self, page: "Page", base_url: str) -> List[ExtractedImage]:
-        """Extract image information from the page."""
+    # Common lazy-load data attributes
+    _LAZY_ATTRS = [
+        "data-src", "data-lazy-src", "data-original", "data-url",
+        "data-image", "data-full", "data-highres", "data-srcset",
+        "data-lazy", "data-echo", "data-lazyload", "data-source",
+    ]
+
+    def _extract_img_elements(self, page: "Page", base_url: str, seen_urls: set) -> List[ExtractedImage]:
+        """Extract images from <img> elements, handling lazy-load attributes."""
         images = []
-        seen_urls = set()
-
-        # Common lazy-load data attributes
-        lazy_attrs = [
-            "data-src", "data-lazy-src", "data-original", "data-url",
-            "data-image", "data-full", "data-highres", "data-srcset",
-            "data-lazy", "data-echo", "data-lazyload", "data-source",
-        ]
-
-        # Get all img elements
         img_elements = page.query_selector_all("img")
 
         for img in img_elements:
             try:
-                # Try multiple src attributes (lazy loading patterns)
+                # Try lazy-load data attributes first
                 src = None
-                for attr in lazy_attrs:
+                for attr in self._LAZY_ATTRS:
                     src = img.get_attribute(attr)
                     if src and not src.startswith(("data:", "blob:")):
                         break
@@ -271,66 +268,31 @@ class WebImageExtractor:
                     if best_src:
                         src = best_src
 
-                # Make absolute URL
                 src = urljoin(base_url, src)
-
-                # Skip duplicates
                 if src in seen_urls:
                     continue
                 seen_urls.add(src)
 
                 # Get dimensions - try multiple methods
-                width, height = 0, 0
-
-                # Method 1: Natural dimensions (actual image size)
-                try:
-                    width = img.evaluate("el => el.naturalWidth") or 0
-                    height = img.evaluate("el => el.naturalHeight") or 0
-                except Exception:
-                    pass
-
-                # Method 2: Bounding box (rendered size)
-                if width == 0 or height == 0:
-                    try:
-                        box = img.bounding_box()
-                        if box:
-                            width = int(box["width"])
-                            height = int(box["height"])
-                    except Exception:
-                        pass
-
-                # Method 3: Attributes
-                if width == 0 or height == 0:
-                    try:
-                        width = int(img.get_attribute("width") or 0)
-                        height = int(img.get_attribute("height") or 0)
-                    except Exception:
-                        pass
-
-                # If still no dimensions, assume it might be large (include it)
-                if width == 0 and height == 0:
-                    width, height = 1000, 1000  # Placeholder
+                width, height = self._get_element_dimensions(img)
 
                 # Filter small images
                 if width < self.MIN_WIDTH or height < self.MIN_HEIGHT:
                     continue
 
-                # Get alt text
                 alt = img.get_attribute("alt") or ""
+                images.append(ExtractedImage(url=src, width=width, height=height, alt=alt[:100]))
 
-                images.append(ExtractedImage(
-                    url=src,
-                    width=width,
-                    height=height,
-                    alt=alt[:100],  # Truncate long alt text
-                ))
-
-            except Exception as e:
-                # Skip problematic images
+            except Exception:
                 continue
 
-        # Also extract from picture/source elements
+        return images
+
+    def _extract_source_elements(self, page: "Page", base_url: str, seen_urls: set) -> List[ExtractedImage]:
+        """Extract images from <picture>/<source> elements."""
+        images = []
         source_elements = page.query_selector_all("picture source, source[type*='image']")
+
         for source in source_elements:
             try:
                 srcset = source.get_attribute("srcset") or source.get_attribute("src")
@@ -340,48 +302,91 @@ class WebImageExtractor:
                         src = urljoin(base_url, src)
                         if src not in seen_urls:
                             seen_urls.add(src)
-                            images.append(ExtractedImage(
-                                url=src, width=1000, height=1000, alt=""
-                            ))
+                            images.append(ExtractedImage(url=src, width=1000, height=1000, alt=""))
             except Exception:
                 continue
 
-        # Also check for background images in divs (common for manga readers)
+        return images
+
+    def _extract_background_images(self, page: "Page", base_url: str, seen_urls: set) -> List[ExtractedImage]:
+        """Extract images from CSS background-image styles."""
+        import re
+        images = []
         bg_elements = page.query_selector_all("[style*='background-image']")
+
         for el in bg_elements:
             try:
                 style = el.get_attribute("style") or ""
-                # Extract URL from background-image: url(...)
-                import re
                 match = re.search(r"background-image:\s*url\(['\"]?([^'\")\s]+)['\"]?\)", style)
-                if match:
-                    src = match.group(1)
-                    if src.startswith(("data:", "blob:")):
-                        continue
+                if not match:
+                    continue
 
-                    src = urljoin(base_url, src)
-                    if src in seen_urls:
-                        continue
-                    seen_urls.add(src)
+                src = match.group(1)
+                if src.startswith(("data:", "blob:")):
+                    continue
 
-                    box = el.bounding_box()
-                    if box:
-                        width = int(box["width"])
-                        height = int(box["height"])
+                src = urljoin(base_url, src)
+                if src in seen_urls:
+                    continue
+                seen_urls.add(src)
 
-                        if width >= self.MIN_WIDTH and height >= self.MIN_HEIGHT:
-                            images.append(ExtractedImage(
-                                url=src,
-                                width=width,
-                                height=height,
-                                alt="",
-                            ))
+                box = el.bounding_box()
+                if box:
+                    width = int(box["width"])
+                    height = int(box["height"])
+                    if width >= self.MIN_WIDTH and height >= self.MIN_HEIGHT:
+                        images.append(ExtractedImage(url=src, width=width, height=height, alt=""))
             except Exception:
                 continue
 
+        return images
+
+    @staticmethod
+    def _get_element_dimensions(img) -> Tuple[int, int]:
+        """Get image dimensions using multiple fallback methods."""
+        width, height = 0, 0
+
+        # Method 1: Natural dimensions (actual image size)
+        try:
+            width = img.evaluate("el => el.naturalWidth") or 0
+            height = img.evaluate("el => el.naturalHeight") or 0
+        except Exception:
+            pass
+
+        # Method 2: Bounding box (rendered size)
+        if width == 0 or height == 0:
+            try:
+                box = img.bounding_box()
+                if box:
+                    width = int(box["width"])
+                    height = int(box["height"])
+            except Exception:
+                pass
+
+        # Method 3: HTML attributes
+        if width == 0 or height == 0:
+            try:
+                width = int(img.get_attribute("width") or 0)
+                height = int(img.get_attribute("height") or 0)
+            except Exception:
+                pass
+
+        # Fallback: assume large
+        if width == 0 and height == 0:
+            width, height = 1000, 1000
+
+        return width, height
+
+    def _extract_images_from_page(self, page: "Page", base_url: str) -> List[ExtractedImage]:
+        """Extract image information from the page using multiple strategies."""
+        seen_urls: set = set()
+
+        images = self._extract_img_elements(page, base_url, seen_urls)
+        images += self._extract_source_elements(page, base_url, seen_urls)
+        images += self._extract_background_images(page, base_url, seen_urls)
+
         # Sort by size (largest first)
         images.sort(key=lambda x: x.width * x.height, reverse=True)
-
         return images
 
     def _parse_srcset(self, srcset: str) -> Optional[str]:

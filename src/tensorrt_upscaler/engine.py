@@ -31,6 +31,8 @@ import tensorrt as trt
 from typing import Optional, Tuple, List
 from concurrent.futures import ThreadPoolExecutor
 
+from .utils import detect_model_scale
+
 # Try to import cuda-python (newer API: cuda.bindings.runtime)
 CUDART_AVAILABLE = False
 cudart = None
@@ -170,16 +172,8 @@ class TensorRTEngine:
 
     def _detect_model_scale(self):
         """Detect model scale from filename (e.g., HAT_L_2x, RealESRGAN_4x)."""
-        basename = os.path.basename(self.onnx_path).lower()
-        for scale in [8, 4, 2, 1]:
-            patterns = [f"{scale}x_", f"_{scale}x", f"x{scale}", f"-{scale}x", f"{scale}x."]
-            for pattern in patterns:
-                if pattern in basename:
-                    self.model_scale = scale
-                    print(f"Detected model scale: {scale}x")
-                    return
-        self.model_scale = 4
-        print(f"Using default model scale: 4x")
+        self.model_scale = detect_model_scale(self.onnx_path)
+        print(f"Detected model scale: {self.model_scale}x")
 
     def _get_cache_path(self) -> str:
         """Generate engine cache path based on ONNX path and settings."""

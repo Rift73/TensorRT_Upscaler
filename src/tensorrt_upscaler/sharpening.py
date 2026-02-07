@@ -26,6 +26,42 @@ except ImportError:
 EPSILON = 1e-6
 
 
+def _split_alpha_pil(image: Image.Image):
+    """Split PIL image into RGB array [0,1] and alpha channel (or None)."""
+    has_alpha = image.mode == 'RGBA'
+    if has_alpha:
+        rgb = image.convert('RGB')
+        alpha = image.getchannel('A')
+    else:
+        rgb = image.convert('RGB')
+        alpha = None
+    arr = np.array(rgb).astype(np.float32) / 255.0
+    return arr, alpha
+
+
+def _merge_alpha_pil(sharpened: np.ndarray, alpha) -> Image.Image:
+    """Merge sharpened RGB array back with alpha channel into PIL image."""
+    sharpened = (sharpened * 255.0).clip(0, 255).astype(np.uint8)
+    result = Image.fromarray(sharpened, mode='RGB')
+    if alpha is not None:
+        result.putalpha(alpha)
+    return result
+
+
+def _split_alpha_array(img: np.ndarray, has_alpha: bool):
+    """Split numpy image into RGB and alpha slice (or None)."""
+    if has_alpha and img.shape[2] == 4:
+        return img[:, :, :3], img[:, :, 3:4]
+    return img[:, :, :3], None
+
+
+def _merge_alpha_array(rgb: np.ndarray, alpha) -> np.ndarray:
+    """Merge RGB array with alpha slice."""
+    if alpha is not None:
+        return np.concatenate([rgb, alpha], axis=2)
+    return rgb
+
+
 # Numba-accelerated CAS kernel (compiled at first use)
 if NUMBA_AVAILABLE:
     @njit(parallel=True, fastmath=True, cache=True)
@@ -200,30 +236,9 @@ def cas_sharpen_pil(
     if amount <= 0:
         return image
 
-    has_alpha = image.mode == 'RGBA'
-
-    if has_alpha:
-        # Separate alpha channel
-        rgb = image.convert('RGB')
-        alpha = image.getchannel('A')
-    else:
-        rgb = image.convert('RGB')
-        alpha = None
-
-    # Convert to numpy [0, 1]
-    arr = np.array(rgb).astype(np.float32) / 255.0
-
-    # Apply CAS
+    arr, alpha = _split_alpha_pil(image)
     sharpened = cas_sharpen(arr, amount, better_diagonals)
-
-    # Convert back to uint8
-    sharpened = (sharpened * 255.0).clip(0, 255).astype(np.uint8)
-    result = Image.fromarray(sharpened, mode='RGB')
-
-    if has_alpha:
-        result.putalpha(alpha)
-
-    return result
+    return _merge_alpha_pil(sharpened, alpha)
 
 
 def cas_sharpen_array(
@@ -247,14 +262,9 @@ def cas_sharpen_array(
     if amount <= 0:
         return img
 
-    if has_alpha and img.shape[2] == 4:
-        # Sharpen only RGB, preserve alpha
-        rgb = img[:, :, :3]
-        alpha = img[:, :, 3:4]
-        rgb_sharp = cas_sharpen(rgb, amount, better_diagonals)
-        return np.concatenate([rgb_sharp, alpha], axis=2)
-    else:
-        return cas_sharpen(img[:, :, :3], amount, better_diagonals)
+    rgb, alpha = _split_alpha_array(img, has_alpha)
+    rgb_sharp = cas_sharpen(rgb, amount, better_diagonals)
+    return _merge_alpha_array(rgb_sharp, alpha)
 
 
 # =============================================================================
@@ -631,29 +641,9 @@ def adaptive_sharpen_pil(
     if strength <= 0:
         return image
 
-    has_alpha = image.mode == 'RGBA'
-
-    if has_alpha:
-        rgb = image.convert('RGB')
-        alpha = image.getchannel('A')
-    else:
-        rgb = image.convert('RGB')
-        alpha = None
-
-    # Convert to numpy [0, 1]
-    arr = np.array(rgb).astype(np.float32) / 255.0
-
-    # Apply adaptive sharpen
+    arr, alpha = _split_alpha_pil(image)
     sharpened = adaptive_sharpen(arr, strength, overshoot_ctrl, anime_mode)
-
-    # Convert back to uint8
-    sharpened = (sharpened * 255.0).clip(0, 255).astype(np.uint8)
-    result = Image.fromarray(sharpened, mode='RGB')
-
-    if has_alpha:
-        result.putalpha(alpha)
-
-    return result
+    return _merge_alpha_pil(sharpened, alpha)
 
 
 def adaptive_sharpen_array(
@@ -679,10 +669,6 @@ def adaptive_sharpen_array(
     if strength <= 0:
         return img
 
-    if has_alpha and img.shape[2] == 4:
-        rgb = img[:, :, :3]
-        alpha = img[:, :, 3:4]
-        rgb_sharp = adaptive_sharpen(rgb, strength, overshoot_ctrl, anime_mode)
-        return np.concatenate([rgb_sharp, alpha], axis=2)
-    else:
-        return adaptive_sharpen(img[:, :, :3], strength, overshoot_ctrl, anime_mode)
+    rgb, alpha = _split_alpha_array(img, has_alpha)
+    rgb_sharp = adaptive_sharpen(rgb, strength, overshoot_ctrl, anime_mode)
+    return _merge_alpha_array(rgb_sharp, alpha)
